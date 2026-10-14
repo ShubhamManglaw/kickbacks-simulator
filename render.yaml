@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: kickbacks-backend
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: DASHBOARD_PASSWORD
+        value: Ankitsin
+      - key: INITIAL_CONFIG
+        sync: false
+      - key: INSTANCE_NAME
+        value: instance_1
+      - key: CLIENTS_PER_INSTANCE
+        value: "5"

@@ -692,7 +692,8 @@ app.get('/api/auth/poll-login/:sessionId', checkAuth, async (req, res) => {
         name: accountName,
         clientId: session.clientId,
         refreshToken: credentials.refresh_token,
-        scale: 10
+        scale: 10,
+        accessToken: credentials.access_token
       };
 
       currentConfig.push(newAccount);
@@ -757,7 +758,8 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
       scale: parseInt(scale, 10) || 10,
       minPromptWait: parseInt(req.body.minPromptWait, 10) || 8,
       maxPromptWait: parseInt(req.body.maxPromptWait, 10) || 15,
-      sessionDuration: parseInt(req.body.sessionDuration, 10) || 60
+      sessionDuration: parseInt(req.body.sessionDuration, 10) || 60,
+      accessToken: tokenData.access_token || null
     };
 
     if (existingIdx >= 0) {

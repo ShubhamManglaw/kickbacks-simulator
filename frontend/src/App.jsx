@@ -11,10 +11,14 @@ const MuiLineChart = lazy(() =>
   import('@mui/x-charts/LineChart').then((module) => ({ default: module.LineChart }))
 );
 
+const CONFIGURED_BACKEND = import.meta.env.VITE_BACKEND_URL;
+
 const DEFAULT_INSTANCES = [
-  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? 'http://localhost:3001'
-    : 'https://kickbacks-backend-nbah.onrender.com'
+  CONFIGURED_BACKEND || (
+    typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+      ? 'http://localhost:3001'
+      : 'https://kickbacks-backend-nbah.onrender.com'
+  )
 ];
 
 const TABS = [
@@ -38,13 +42,16 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(false);
 
   const [instances, setInstances] = useState(() => {
-    const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
     const saved = localStorage.getItem('dashboard_instances');
     let list = saved ? JSON.parse(saved) : DEFAULT_INSTANCES;
     list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.match(/:(300[2-9]|3010)/));
     if (!isLocal) {
       // In production (e.g. Vercel), strip plain localhost/http URLs to avoid mixed content errors
       list = list.filter(item => !item.includes('localhost') && !item.includes('127.0.0.1'));
+    }
+    if (CONFIGURED_BACKEND && !list.includes(CONFIGURED_BACKEND)) {
+      list.unshift(CONFIGURED_BACKEND);
     }
     if (!list || list.length === 0) {
       list = [...DEFAULT_INSTANCES];

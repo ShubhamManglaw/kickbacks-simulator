@@ -1,7 +1,10 @@
 const crypto = require('crypto');
+const path = require('path');
+const { exec } = require('child_process');
 
 const BACKEND_BASE = "https://kickbacks-backend-gmdaqm2c7q-uw.a.run.app";
 const clientId = crypto.randomBytes(12).toString("hex");
+const targetEmail = process.argv[2] || process.env.LOGIN_EMAIL || "shubhammanglaw@gmail.com";
 
 async function mint() {
   console.log("1. Starting login session...");
@@ -23,7 +26,20 @@ async function mint() {
     process.exit(1);
   }
 
-  console.log(`\n👉 OPEN THIS LINK IN YOUR BROWSER AND SIGN IN:\n\n${loginUrl}\n`);
+  let finalLoginUrl = loginUrl;
+  if (targetEmail && !loginUrl.includes('login_hint=')) {
+    finalLoginUrl += `&login_hint=${encodeURIComponent(targetEmail)}`;
+  }
+
+  console.log(`\n👉 OPEN THIS LINK IN YOUR BROWSER AND SIGN IN AS ${targetEmail}:\n\n${finalLoginUrl}\n`);
+  
+  if (process.platform === 'darwin') {
+    try {
+      exec(`open "${finalLoginUrl}"`);
+      console.log(`🌐 Automatically opened Google Sign-In in your browser.`);
+    } catch (_) {}
+  }
+
   console.log("Waiting for authorization (polling every 3s)...");
 
   const interval = setInterval(async () => {
@@ -71,31 +87,60 @@ async function mint() {
           console.log(`⚠️ Consent setup error: ${e.message}`);
         }
 
-        // 2. Auto-append to config.json and PostgreSQL
+        // 2. Auto-save to config.json and PostgreSQL
         try {
           const { loadConfig, saveConfig } = require('./db');
           const currentConfig = await loadConfig();
-          const accountName = `account_${currentConfig.length + 1}_${clientId.slice(0, 6)}`;
-          
-          const newAccount = {
-            name: accountName,
-            clientId: clientId,
-            refreshToken: credentials.refresh_token,
-            scale: 100,
-            accessToken: credentials.access_token
-          };
 
-          currentConfig.push(newAccount);
+          const getEmail = (tok) => {
+            try { return JSON.parse(Buffer.from(tok.split('.')[1], 'base64').toString()).email; } catch { return null; }
+          };
+          const newEmail = getEmail(credentials.access_token);
+
+          let matchIdx = -1;
+          if (newEmail) {
+            matchIdx = currentConfig.findIndex(a => a.accessToken && getEmail(a.accessToken) === newEmail);
+          }
+          if (matchIdx === -1 && currentConfig.length === 1) {
+            matchIdx = 0;
+          }
+
+          const accountName = newEmail ? newEmail.split('@')[0] : (targetEmail ? targetEmail.split('@')[0] : `client_${clientId.slice(0, 6)}`);
+
+          if (matchIdx >= 0) {
+            console.log(`\n🔄 Updating account: ${accountName} (${newEmail || 'index ' + matchIdx})`);
+            currentConfig[matchIdx].name = accountName;
+            currentConfig[matchIdx].clientId = clientId;
+            currentConfig[matchIdx].refreshToken = credentials.refresh_token;
+            currentConfig[matchIdx].accessToken = credentials.access_token;
+            currentConfig[matchIdx].scale = currentConfig[matchIdx].scale || 10;
+          } else {
+            currentConfig.push({
+              name: accountName,
+              clientId: clientId,
+              refreshToken: credentials.refresh_token,
+              scale: 10,
+              accessToken: credentials.access_token
+            });
+          }
+
           await saveConfig(currentConfig);
 
-          console.log(`\n🚀 Account successfully saved to config.json and database!`);
+          console.log(`\n🚀 Account '${accountName}' successfully saved to config.json!`);
           console.log(`Total Active Accounts in Fleet: ${currentConfig.length}`);
-          console.log(`Run ./start.sh or restart cluster to distribute clients across all ${currentConfig.length} accounts.\n`);
+
+          const startScript = path.resolve(__dirname, '..', 'start.sh');
+          console.log(`\n⚡ Automatically launching simulator fleet via ${startScript}...`);
+          exec(`bash "${startScript}"`, (startErr, startOut) => {
+            if (startErr) console.error("Fleet launch error:", startErr.message);
+            if (startOut) console.log(startOut);
+            process.exit(0);
+          });
+          return;
         } catch (saveErr) {
           console.error("Failed to auto-save config:", saveErr.message);
+          process.exit(1);
         }
-
-        process.exit(0);
       } else if (pollRes.status !== 202) {
         console.log(`Polling status: ${pollRes.status}. Retrying...`);
       }

@@ -149,6 +149,21 @@ function getDevContext() {
   return { ...ctx, sessionHash };
 }
 
+// Helper to inspect JWT expiration without external dependencies
+function isJwtValid(token, bufferSeconds = 60) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+    if (!payload.exp) return true;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    return payload.exp > (nowSeconds + bufferSeconds);
+  } catch {
+    return false;
+  }
+}
+
 // Distributed lock key for PG advisory lock (same across all instances)
 const REFRESH_LOCK_KEY = 999777;
 
@@ -159,21 +174,27 @@ class TokenManager {
     this.config = config;
     this.accessToken = profile.accessToken || null;
     this.refreshInFlight = null;
+    this.invalidatedTokens = new Set();
+    this.lastFailedRefreshToken = null;
     // Circuit breaker: tracks consecutive hard-401 failures on refresh
     this.consecutiveRefreshFailures = 0;
     this.circuitBreakerBackoffMs = 30000; // starts at 30s, doubles each failure
     this.circuitBreakerUntil = 0; // timestamp until which we should NOT attempt refresh
     this.preemptiveTimer = null;
-    this.tokenAgeMs = 0;
+  }
+
+  resetCircuitBreaker() {
+    this.consecutiveRefreshFailures = 0;
+    this.circuitBreakerBackoffMs = 30000;
+    this.circuitBreakerUntil = 0;
   }
 
   startPreemptiveRefresh() {
     if (this.preemptiveTimer) clearInterval(this.preemptiveTimer);
     this.preemptiveTimer = setInterval(() => {
-      this.tokenAgeMs += 60000;
-      // Kickbacks tokens last ~60 minutes. Refresh preemptively at 50 minutes.
-      if (this.tokenAgeMs >= 50 * 60 * 1000) {
-        console.log(`[Auth:${this.profile.name}] Preemptive refresh triggered (token is 50+ mins old).`);
+      // Preemptively refresh if token expires within 5 minutes (300 seconds)
+      if (this.accessToken && !isJwtValid(this.accessToken, 300)) {
+        console.log(`[Auth:${this.profile.name}] Preemptive refresh triggered (token expiring within 5 mins).`);
         this.refresh().catch(err => console.error(`[Auth:${this.profile.name}] Preemptive refresh failed:`, err.message));
       }
     }, 60000);
@@ -183,31 +204,57 @@ class TokenManager {
     try {
       const latestConfig = await loadConfig();
       const currentProfile = latestConfig[this.index];
-      if (currentProfile && currentProfile.accessToken) {
-        if (this.accessToken !== currentProfile.accessToken) {
-          this.accessToken = currentProfile.accessToken;
+      if (currentProfile) {
+        // If config on disk has a new refresh token, reset circuit breaker
+        if (currentProfile.refreshToken && currentProfile.refreshToken !== this.lastFailedRefreshToken) {
+          if (this.circuitBreakerUntil > 0 || this.consecutiveRefreshFailures > 0) {
+            console.log(`[Auth:${this.profile.name}] Detected updated refresh token in config. Resetting circuit breaker.`);
+            this.resetCircuitBreaker();
+          }
           this.profile.refreshToken = currentProfile.refreshToken;
-          this.profile.accessToken = currentProfile.accessToken;
-          this.tokenAgeMs = 0; // Reset age since we got a new token from DB
         }
-        // If we got a valid token from DB, reset circuit breaker
-        if (this.consecutiveRefreshFailures > 0) {
-          console.log(`[Auth:${this.profile.name}] Got fresh token from DB. Resetting circuit breaker.`);
-          this.consecutiveRefreshFailures = 0;
-          this.circuitBreakerBackoffMs = 30000;
-          this.circuitBreakerUntil = 0;
+
+        // Check if config on disk has a fresh valid access token
+        if (currentProfile.accessToken && !this.invalidatedTokens.has(currentProfile.accessToken) && isJwtValid(currentProfile.accessToken)) {
+          if (this.accessToken !== currentProfile.accessToken) {
+            this.accessToken = currentProfile.accessToken;
+            this.profile.accessToken = currentProfile.accessToken;
+            this.profile.refreshToken = currentProfile.refreshToken;
+            this.resetCircuitBreaker();
+          }
         }
       }
     } catch (err) {
-      console.warn(`[Auth:${this.profile.name}] Failed to load latest config from DB inside getAccessToken:`, err.message);
+      console.warn(`[Auth:${this.profile.name}] Failed to load latest config inside getAccessToken:`, err.message);
     }
 
-    if (this.accessToken) return this.accessToken;
+    if (this.accessToken && !this.invalidatedTokens.has(this.accessToken) && isJwtValid(this.accessToken)) {
+      return this.accessToken;
+    }
     return this.refresh();
   }
 
   async refresh(retries = 3, delay = 5000) {
-    // Circuit breaker: if we've failed too many times, don't even try
+    // Before blocking on circuit breaker, verify if a new token was saved to config
+    try {
+      const latestConfig = await loadConfig();
+      const currentProfile = latestConfig[this.index];
+      if (currentProfile) {
+        if (currentProfile.refreshToken && currentProfile.refreshToken !== this.lastFailedRefreshToken) {
+          this.resetCircuitBreaker();
+          this.profile.refreshToken = currentProfile.refreshToken;
+        }
+        if (currentProfile.accessToken && !this.invalidatedTokens.has(currentProfile.accessToken) && isJwtValid(currentProfile.accessToken)) {
+          this.resetCircuitBreaker();
+          this.accessToken = currentProfile.accessToken;
+          this.profile.accessToken = currentProfile.accessToken;
+          this.profile.refreshToken = currentProfile.refreshToken;
+          return this.accessToken;
+        }
+      }
+    } catch (_) {}
+
+    // Circuit breaker: if we've failed too many times, wait before next attempt
     if (this.circuitBreakerUntil > Date.now()) {
       const waitSec = Math.round((this.circuitBreakerUntil - Date.now()) / 1000);
       console.warn(`[Auth:${this.profile.name}] Circuit breaker OPEN. Refresh token appears dead. Waiting ${waitSec}s before next attempt. Re-run 'node mint.js' to get a new token.`);
@@ -221,39 +268,53 @@ class TokenManager {
       try {
         const latestConfig = await loadConfig();
         const currentProfile = latestConfig[this.index];
-        if (currentProfile && currentProfile.accessToken && currentProfile.refreshToken !== this.profile.refreshToken) {
+        if (currentProfile && currentProfile.accessToken && !this.invalidatedTokens.has(currentProfile.accessToken) && isJwtValid(currentProfile.accessToken) && currentProfile.refreshToken !== this.profile.refreshToken) {
           console.log(`[Auth:${this.profile.name}] Another instance already refreshed. Using updated token.`);
           this.accessToken = currentProfile.accessToken;
           this.profile.refreshToken = currentProfile.refreshToken;
           this.profile.accessToken = currentProfile.accessToken;
-          this.consecutiveRefreshFailures = 0;
-          this.circuitBreakerBackoffMs = 30000;
-          this.circuitBreakerUntil = 0;
-          this.tokenAgeMs = 0;
-          return this.accessToken;
-        }
-        // Even if refresh token is the same, maybe access token was updated
-        if (currentProfile && currentProfile.accessToken) {
-          this.accessToken = currentProfile.accessToken;
-          this.profile.accessToken = currentProfile.accessToken;
-          this.profile.refreshToken = currentProfile.refreshToken;
+          this.resetCircuitBreaker();
           return this.accessToken;
         }
       } catch (err) {
         console.warn(`[Auth:${this.profile.name}] DB check failed inside refresh:`, err.message);
       }
 
-      // Step 2: Try to acquire PG advisory lock for distributed refresh
+      // Step 2: Try to acquire PG advisory lock or local file lock for distributed refresh
       const { getPgClient } = require('./db');
       let pgClient = null;
       let gotLock = false;
+      const fileLockPath = path.join(os.tmpdir(), `kickbacks_lock_${this.profile.name}.lock`);
+      let acquiredFileLock = false;
+
       try {
-        pgClient = await getPgClient();
-        const lockRes = await pgClient.query('SELECT pg_try_advisory_lock($1) as locked;', [REFRESH_LOCK_KEY]);
-        gotLock = lockRes.rows[0]?.locked === true;
+        if (process.env.DATABASE_URL) {
+          pgClient = await getPgClient();
+          const lockRes = await pgClient.query('SELECT pg_try_advisory_lock($1) as locked;', [REFRESH_LOCK_KEY]);
+          gotLock = lockRes.rows[0]?.locked === true;
+        } else {
+          // File lock fallback for multi-process local setups
+          try {
+            const fd = fs.openSync(fileLockPath, 'wx');
+            fs.closeSync(fd);
+            gotLock = true;
+            acquiredFileLock = true;
+          } catch (fileErr) {
+            // Check if existing lock is stale (> 30s)
+            try {
+              const stat = fs.statSync(fileLockPath);
+              if (Date.now() - stat.mtimeMs > 30000) {
+                fs.unlinkSync(fileLockPath);
+                const fd = fs.openSync(fileLockPath, 'wx');
+                fs.closeSync(fd);
+                gotLock = true;
+                acquiredFileLock = true;
+              }
+            } catch (_) {}
+          }
+        }
       } catch (err) {
-        console.warn(`[Auth:${this.profile.name}] Could not acquire PG advisory lock:`, err.message);
-        // Fall through — if DB is down, attempt refresh anyway
+        console.warn(`[Auth:${this.profile.name}] Could not acquire lock:`, err.message);
         gotLock = true;
       }
 
@@ -262,19 +323,16 @@ class TokenManager {
         console.log(`[Auth:${this.profile.name}] Another instance is refreshing. Waiting for lock release...`);
         if (pgClient) { pgClient.release(); pgClient = null; }
         for (let wait = 0; wait < 6; wait++) {
-          await sleep(3000);
+          await sleep(2500);
           try {
             const latestConfig = await loadConfig();
             const currentProfile = latestConfig[this.index];
-            if (currentProfile && currentProfile.accessToken && currentProfile.refreshToken !== this.profile.refreshToken) {
+            if (currentProfile && currentProfile.accessToken && !this.invalidatedTokens.has(currentProfile.accessToken) && isJwtValid(currentProfile.accessToken)) {
               this.accessToken = currentProfile.accessToken;
               this.profile.refreshToken = currentProfile.refreshToken;
               this.profile.accessToken = currentProfile.accessToken;
               console.log(`[Auth:${this.profile.name}] Got refreshed token from DB (written by another instance).`);
-              this.consecutiveRefreshFailures = 0;
-              this.circuitBreakerBackoffMs = 30000;
-              this.circuitBreakerUntil = 0;
-              this.tokenAgeMs = 0;
+              this.resetCircuitBreaker();
               return this.accessToken;
             }
           } catch (err) {
@@ -284,21 +342,19 @@ class TokenManager {
         console.warn(`[Auth:${this.profile.name}] Timed out waiting for lock holder. Will attempt refresh ourselves.`);
       }
 
-      // Step 3: We have the lock (or timed out waiting). Actually refresh.
+      // Step 3: Refresh
       let refreshResult = null;
       try {
         refreshResult = await this._doRefresh(retries, delay);
       } finally {
-        // Release the advisory lock
         if (gotLock && pgClient) {
-          try {
-            await pgClient.query('SELECT pg_advisory_unlock($1);', [REFRESH_LOCK_KEY]);
-          } catch (err) {
-            // Ignore unlock errors
-          }
+          try { await pgClient.query('SELECT pg_advisory_unlock($1);', [REFRESH_LOCK_KEY]); } catch (_) {}
           pgClient.release();
         } else if (pgClient) {
           pgClient.release();
+        }
+        if (acquiredFileLock) {
+          try { fs.unlinkSync(fileLockPath); } catch (_) {}
         }
       }
       return refreshResult;
@@ -313,22 +369,18 @@ class TokenManager {
 
   async _doRefresh(retries = 3, delay = 5000) {
     for (let attempt = 1; attempt <= retries; attempt++) {
-      // Re-check DB before each attempt (another instance may have finished)
+      // Re-check DB before each attempt
       try {
         const latestConfig = await loadConfig();
         const currentProfile = latestConfig[this.index];
-        if (currentProfile && currentProfile.accessToken && currentProfile.refreshToken !== this.profile.refreshToken) {
+        if (currentProfile && currentProfile.accessToken && !this.invalidatedTokens.has(currentProfile.accessToken) && isJwtValid(currentProfile.accessToken) && currentProfile.refreshToken !== this.profile.refreshToken) {
           console.log(`[Auth:${this.profile.name}] Token was refreshed by another instance between attempts. Using it.`);
           this.accessToken = currentProfile.accessToken;
           this.profile.refreshToken = currentProfile.refreshToken;
           this.profile.accessToken = currentProfile.accessToken;
-          this.consecutiveRefreshFailures = 0;
-          this.circuitBreakerBackoffMs = 30000;
-          this.circuitBreakerUntil = 0;
-          this.tokenAgeMs = 0;
+          this.resetCircuitBreaker();
           return this.accessToken;
         }
-        // Sync refresh token from DB in case it changed
         if (currentProfile && currentProfile.refreshToken) {
           this.profile.refreshToken = currentProfile.refreshToken;
         }
@@ -358,9 +410,9 @@ class TokenManager {
 
         if (res.status === 401) {
           console.error(`[Auth:${this.profile.name}] Refresh token REJECTED (401). Token is dead.`);
+          this.lastFailedRefreshToken = cleanRefreshToken;
           this.consecutiveRefreshFailures++;
           if (this.consecutiveRefreshFailures >= 3) {
-            // Trip the circuit breaker — stop trying for a while
             this.circuitBreakerUntil = Date.now() + this.circuitBreakerBackoffMs;
             console.error(`[Auth:${this.profile.name}] ⚠️  CIRCUIT BREAKER TRIPPED after ${this.consecutiveRefreshFailures} consecutive failures. Pausing refresh for ${this.circuitBreakerBackoffMs / 1000}s. Run 'node mint.js' to get a new token.`);
             this.circuitBreakerBackoffMs = Math.min(this.circuitBreakerBackoffMs * 2, 600000); // max 10 min
@@ -385,16 +437,9 @@ class TokenManager {
         console.log(`[Auth:${this.profile.name}] ✅ Token refreshed successfully. Saving to DB...`);
         this.profile.refreshToken = newRefreshToken;
         this.profile.accessToken = this.accessToken;
+        this.resetCircuitBreaker();
 
-        // Reset circuit breaker and age on success
-        this.consecutiveRefreshFailures = 0;
-        this.circuitBreakerBackoffMs = 30000;
-        this.circuitBreakerUntil = 0;
-        this.tokenAgeMs = 0;
-
-        // CRITICAL: This save MUST succeed. The old refresh token is already
-        // consumed by the API. If we fail to persist the new one, all instances
-        // are permanently locked out until a manual re-mint.
+        // Save to DB and config.json
         let saved = false;
         for (let saveAttempt = 1; saveAttempt <= 3; saveAttempt++) {
           try {
@@ -442,17 +487,19 @@ class TokenManager {
     return null;
   }
 
-  invalidateToken() {
-    if (this.accessToken) {
+  invalidateToken(badToken = null) {
+    const dead = badToken || this.accessToken;
+    if (dead) {
+      this.invalidatedTokens.add(dead);
       console.log(`[Auth:${this.profile.name}] Invalidating access token (will refresh on next use).`);
     }
     this.accessToken = null;
     this.profile.accessToken = null;
     // Also clear from DB so other instances don't keep using the dead token
-    loadConfig().then(config => {
-      if (config[this.index]) {
+    loadConfig().then(async config => {
+      if (config[this.index] && (config[this.index].accessToken === dead || !dead)) {
         config[this.index].accessToken = null;
-        saveConfig(config).catch(() => {});
+        await saveConfig(config).catch(() => {});
       }
     }).catch(() => {});
   }
@@ -884,7 +931,10 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
       clearTimeout(rotationTimer);
       rotationTimer = null;
     }
-    console.log(`[${name}] Stopped showing ad. Total visible ms: ${accruedVisibleMs}`);
+    if (activeAd && accruedVisibleMs > 0) {
+      console.log(`[${name}] Stopped showing ad. Total visible ms: ${accruedVisibleMs}`);
+    }
+    activeAd = null;
     accruedVisibleMs = 0;
     lastAccrualMs = 0;
   }
@@ -895,6 +945,7 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
       console.log(`[${name}] No active ad returned in portfolio.`);
       return;
     }
+    activeAd = ad;
 
     ad.title_text = ad.ad_line || ad.brand || ad.title_text || "Sponsored Ad";
     const isPaidAd = !ad.ad_id?.startsWith('house-') && !ad.ad_id?.startsWith('house:');
@@ -1067,8 +1118,7 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
 
     const portfolio = await fetchAd();
     if (portfolio && portfolio.ad) {
-      activeAd = portfolio.ad;
-      await startShow(activeAd, portfolio.viewThresholdMs, portfolio.tickIntervalMs, portfolio.rotationIntervalMs);
+      await startShow(portfolio.ad, portfolio.viewThresholdMs, portfolio.tickIntervalMs, portfolio.rotationIntervalMs);
     } else {
       console.log(`[${name}] No ad returned or in cooldown. Retrying in 15s...`);
       let cooldownSecRemaining = 15;
