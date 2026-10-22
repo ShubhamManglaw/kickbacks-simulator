@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Kickbacks Control</title>
+  <desc id="desc">A CPU control icon with a live signal ring.</desc>
+  <rect width="64" height="64" rx="14" fill="#0b0d12"/>
+  <path fill="#0a72d8" d="M32 10c12.15 0 22 9.85 22 22S44.15 54 32 54 10 44.15 10 32 19.85 10 32 10Zm0 6c-8.84 0-16 7.16-16 16s7.16 16 16 16 16-7.16 16-16-7.16-16-16-16Z"/>
+  <path fill="#2bb8d8" d="M48 32c0 4.25-1.69 8.31-4.69 11.31A15.96 15.96 0 0 1 32 48v-6c2.65 0 5.2-1.05 7.07-2.93A9.98 9.98 0 0 0 42 32h6Z"/>
+  <path fill="#11a36a" d="M23 23h18v18H23V23Zm5 5v8h8v-8h-8Z"/>
+  <path stroke="#dce8f7" stroke-linecap="round" stroke-width="3" d="M24 14v6m8-6v6m8-6v6M24 44v6m8-6v6m8-6v6M14 24h6m-6 8h6m-6 8h6m24-16h6m-6 8h6m-6 8h6"/>
+</svg>

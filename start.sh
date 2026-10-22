@@ -75,29 +75,29 @@ fi
 # ------------------------------------------------------------------
 # 2. Dependencies & Build Tooling Auto-Repair
 # ------------------------------------------------------------------
+# Ensure config.json is initialized from default credentials template if missing
+if [ ! -f "$DIR/backend/config.json" ] && [ -f "$DIR/backend/config.default.json" ]; then
+  echo "📋 Initializing backend/config.json from default template..."
+  cp "$DIR/backend/config.default.json" "$DIR/backend/config.json"
+fi
+
 if [ ! -d "$DIR/backend/node_modules" ]; then
   echo "📦 Installing backend dependencies..."
   (cd "$DIR/backend" && npm install)
 fi
 
-if [ ! -d "$DIR/frontend/node_modules" ]; then
-  echo "📦 Installing frontend dependencies..."
+# Frontend handling: If pre-compiled dist/ exists, the Express backend serves it natively.
+# Only attempt to install Vite if dist is missing or user explicitly has plenty of RAM.
+if [ ! -f "$DIR/frontend/dist/index.html" ]; then
+  echo "📦 Pre-built frontend bundle missing. Installing frontend dependencies..."
   (cd "$DIR/frontend" && npm install)
+  (cd "$DIR/frontend" && npm run build) || true
 fi
 
-# Guard against missing platform-specific Rolldown/Vite optional bindings
-if ! (cd "$DIR/frontend" && ./node_modules/.bin/vite --help >/dev/null 2>&1); then
-  echo "🔧 Repairing frontend native compiler bindings..."
-  (cd "$DIR/frontend" && npm install --include=optional)
-  if ! (cd "$DIR/frontend" && ./node_modules/.bin/vite --help >/dev/null 2>&1); then
-    ARCH=$(uname -m)
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    if [ "$OS" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
-      (cd "$DIR/frontend" && npm install @rolldown/binding-linux-x64-gnu)
-    elif [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
-      (cd "$DIR/frontend" && npm install @rolldown/binding-linux-arm64-gnu)
-    fi
-  fi
+# Optional: try to launch Vite dev server if node_modules already exists, but do not fail
+HAS_VITE=false
+if [ -f "$DIR/frontend/node_modules/.bin/vite" ]; then
+  HAS_VITE=true
 fi
 
 # ------------------------------------------------------------------
@@ -112,7 +112,7 @@ fi
 # ------------------------------------------------------------------
 # 4. Fleet Configuration & Port Cleanup
 # ------------------------------------------------------------------
-NUM_ACCOUNTS=$(node -e 'try { const fs=require("fs"); const c=JSON.parse(fs.readFileSync("./backend/config.json")); console.log(Math.max(1, Array.isArray(c) ? c.length : 1)); } catch(e) { console.log(1); }')
+NUM_ACCOUNTS=$(node -e 'try { const fs=require("fs"); const p = fs.existsSync("./backend/config.json") ? "./backend/config.json" : "./backend/config.default.json"; const c=JSON.parse(fs.readFileSync(p)); console.log(Math.max(1, Array.isArray(c) ? c.length : 1)); } catch(e) { console.log(1); }')
 TOTAL_INSTANCES=${TOTAL_INSTANCES:-$NUM_ACCOUNTS}
 CLIENTS_PER_INSTANCE=${CLIENTS_PER_INSTANCE:-10}
 TOTAL_CLIENTS=$((TOTAL_INSTANCES * CLIENTS_PER_INSTANCE))
@@ -161,27 +161,43 @@ TOTAL_INSTANCES=1 \
 nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_1.log" 2>&1 &
 BACKEND_PID=$!
 disown $BACKEND_PID 2>/dev/null || true
-echo "   -> [Backend API] Unified engine live on http://localhost:3001 (PID: $BACKEND_PID)"
+echo "   -> [Backend API + Web Dashboard] Live on port 3001 (PID: $BACKEND_PID)"
 
 # ------------------------------------------------------------------
-# 6. Launch React Frontend Dashboard
+# 6. Launch React Frontend Dashboard (Vite dev server if available)
 # ------------------------------------------------------------------
-echo "3. Starting React Frontend Dashboard..."
-(
-  cd "$DIR/frontend" && \
-  nohup ./node_modules/.bin/vite --port 5174 --host 0.0.0.0 </dev/null >> "$DIR/logs/frontend.log" 2>&1 &
-  FRONTEND_PID=$!
-  disown $FRONTEND_PID 2>/dev/null || true
-  echo $FRONTEND_PID > "$DIR/logs/frontend.pid"
-)
-echo "   -> [Frontend] Dashboard starting on http://localhost:5174"
+if [ "$HAS_VITE" = "true" ]; then
+  echo "3. Starting optional Vite dev server on port 5174..."
+  (
+    cd "$DIR/frontend" && \
+    nohup ./node_modules/.bin/vite --port 5174 --host 0.0.0.0 </dev/null >> "$DIR/logs/frontend.log" 2>&1 &
+    FRONTEND_PID=$!
+    disown $FRONTEND_PID 2>/dev/null || true
+    echo $FRONTEND_PID > "$DIR/logs/frontend.pid"
+  )
+else
+  echo "3. Headless/Lightweight Mode: Web Dashboard is served directly by Backend (port 3001) with zero extra RAM."
+fi
 
 sleep 2
+
+# Detect host LAN IP for headless SSH users
+LAN_IP=""
+if command -v hostname >/dev/null 2>&1; then
+  LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
+if [ -z "$LAN_IP" ] && command -v ip >/dev/null 2>&1; then
+  LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
+fi
+[ -z "$LAN_IP" ] && LAN_IP="localhost"
 
 echo ""
 echo "========================================================"
 echo "✨ Kickbacks Fleet is live and running!"
-echo "   - Dashboard: http://localhost:5174"
-echo "   - Backend API: http://localhost:3001"
+echo "   - Local Dashboard:     http://localhost:3001"
+echo "   - Remote / SSH Access: http://${LAN_IP}:3001"
+if [ "$HAS_VITE" = "true" ]; then
+echo "   - Vite Dev Port:       http://${LAN_IP}:5174"
+fi
 echo "   - Configured Accounts: $NUM_ACCOUNTS"
 echo "========================================================"

@@ -13,18 +13,40 @@ const MuiLineChart = lazy(() =>
 
 const CONFIGURED_BACKEND = import.meta.env.VITE_BACKEND_URL;
 
-const DEFAULT_INSTANCES = [
-  CONFIGURED_BACKEND || (
-    typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-      ? 'http://localhost:3001'
-      : 'https://kickbacks-backend-nbah.onrender.com'
-  )
-];
+const isLanHostname = (h) => {
+  if (!h) return false;
+  return h === 'localhost' ||
+    h === '127.0.0.1' ||
+    h === '0.0.0.0' ||
+    h.endsWith('.local') ||
+    h.startsWith('192.168.') ||
+    h.startsWith('10.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+};
+
+const resolveDefaultBackend = () => {
+  if (CONFIGURED_BACKEND) return CONFIGURED_BACKEND;
+  if (typeof window === 'undefined') return 'http://localhost:3001';
+  
+  const { hostname, port, protocol, origin } = window.location;
+  if (port === '3001') {
+    return origin;
+  }
+  if (port === '5173' || port === '5174') {
+    return `${protocol}//${hostname}:3001`;
+  }
+  if (isLanHostname(hostname)) {
+    return `${protocol}//${hostname}:3001`;
+  }
+  return 'https://kickbacks-backend-nbah.onrender.com';
+};
+
+const DEFAULT_INSTANCES = [resolveDefaultBackend()];
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
   { id: 'analytics', label: 'Analytics', icon: LineChartIcon },
-  { id: 'config', label: 'Config', icon: Settings },
+  { id: 'config', label: 'Control', icon: Settings },
   { id: 'logs', label: 'Logs', icon: Terminal }
 ];
 
@@ -42,23 +64,22 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(false);
 
   const [instances, setInstances] = useState(() => {
-    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const isLocal = typeof window !== 'undefined' && isLanHostname(window.location.hostname);
+    const resolvedDefault = resolveDefaultBackend();
+    const defaultList = [resolvedDefault];
     const saved = localStorage.getItem('dashboard_instances');
-    let list = saved ? JSON.parse(saved) : DEFAULT_INSTANCES;
+    let list = saved ? JSON.parse(saved) : defaultList;
     list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.match(/:(300[2-9]|3010)/));
     if (!isLocal) {
       // In production (e.g. Vercel), strip plain localhost/http URLs to avoid mixed content errors
       list = list.filter(item => !item.includes('localhost') && !item.includes('127.0.0.1'));
     }
-    if (CONFIGURED_BACKEND && !list.includes(CONFIGURED_BACKEND)) {
-      list.unshift(CONFIGURED_BACKEND);
+    if (resolvedDefault && !list.includes(resolvedDefault)) {
+      list.unshift(resolvedDefault);
     }
     if (!list || list.length === 0) {
-      list = [...DEFAULT_INSTANCES];
+      list = [...defaultList];
     }
-    DEFAULT_INSTANCES.forEach(def => {
-      if (!list.includes(def)) list.push(def);
-    });
     return list;
   });
   const [newUrl, setNewUrl] = useState('');

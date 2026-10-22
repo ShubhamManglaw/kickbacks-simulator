@@ -114,6 +114,17 @@ async function loadConfig() {
         return fileData;
       }
     }
+    const defaultPath = path.join(__dirname, 'config.default.json');
+    if (fs.existsSync(defaultPath)) {
+      const fileData = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
+      if (Array.isArray(fileData) && fileData.length > 0) {
+        try {
+          fs.writeFileSync(CONFIG_PATH, JSON.stringify(fileData, null, 2), 'utf8');
+        } catch (_) {}
+        console.log("SYSTEM: Config loaded from config.default.json template.");
+        return fileData;
+      }
+    }
   } catch (err) {
     console.error("SYSTEM: Local config load failed:", err.message);
   }
