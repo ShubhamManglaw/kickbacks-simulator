@@ -38,7 +38,7 @@ const resolveDefaultBackend = () => {
   if (isLanHostname(hostname)) {
     return `${protocol}//${hostname}:3001`;
   }
-  return 'https://kickbacks-backend-nbah.onrender.com';
+  return 'https://kickbacks-backend-6big.onrender.com';
 };
 
 const DEFAULT_INSTANCES = [resolveDefaultBackend()];
@@ -69,7 +69,7 @@ export default function App() {
     const defaultList = [resolvedDefault];
     const saved = localStorage.getItem('dashboard_instances');
     let list = saved ? JSON.parse(saved) : defaultList;
-    list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.match(/:(300[2-9]|3010)/));
+    list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.includes('kickbacks-backend-nbah.onrender.com') && !item.match(/:(300[2-9]|3010)/));
     if (!isLocal) {
       // In production (e.g. Vercel), strip plain localhost/http URLs to avoid mixed content errors
       list = list.filter(item => !item.includes('localhost') && !item.includes('127.0.0.1'));
