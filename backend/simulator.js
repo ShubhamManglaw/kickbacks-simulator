@@ -181,6 +181,7 @@ class TokenManager {
     this.circuitBreakerBackoffMs = 30000; // starts at 30s, doubles each failure
     this.circuitBreakerUntil = 0; // timestamp until which we should NOT attempt refresh
     this.preemptiveTimer = null;
+    this.simulatedMicros = 0;
   }
 
   resetCircuitBreaker() {
@@ -190,6 +191,7 @@ class TokenManager {
   }
 
   startPreemptiveRefresh() {
+    if (this.profile.isSimulated || this.profile.simulated) return;
     if (this.preemptiveTimer) clearInterval(this.preemptiveTimer);
     this.preemptiveTimer = setInterval(() => {
       // Preemptively refresh if token expires within 5 minutes (300 seconds)
@@ -201,9 +203,12 @@ class TokenManager {
   }
 
   async getAccessToken() {
+    if (this.profile.isSimulated || this.profile.simulated) {
+      return this.accessToken || `simulated_token_${this.profile.name}`;
+    }
     try {
       const latestConfig = await loadConfig();
-      const currentProfile = latestConfig[this.index];
+      const currentProfile = latestConfig.find(c => c.name === this.profile.name || (c.clientId && c.clientId === this.profile.clientId)) || latestConfig[this.index];
       if (currentProfile) {
         // If config on disk has a new refresh token, reset circuit breaker
         if (currentProfile.refreshToken && currentProfile.refreshToken !== this.lastFailedRefreshToken) {
@@ -235,10 +240,14 @@ class TokenManager {
   }
 
   async refresh(retries = 3, delay = 5000) {
+    if (this.profile.isSimulated || this.profile.simulated) {
+      this.accessToken = `simulated_token_${this.profile.name}`;
+      return this.accessToken;
+    }
     // Before blocking on circuit breaker, verify if a new token was saved to config
     try {
       const latestConfig = await loadConfig();
-      const currentProfile = latestConfig[this.index];
+      const currentProfile = latestConfig.find(c => c.name === this.profile.name || (c.clientId && c.clientId === this.profile.clientId)) || latestConfig[this.index];
       if (currentProfile) {
         if (currentProfile.refreshToken && currentProfile.refreshToken !== this.lastFailedRefreshToken) {
           this.resetCircuitBreaker();
@@ -444,7 +453,12 @@ class TokenManager {
         for (let saveAttempt = 1; saveAttempt <= 3; saveAttempt++) {
           try {
             const latestConfig = await loadConfig();
-            latestConfig[this.index] = this.profile;
+            const targetIdx = latestConfig.findIndex(c => c.name === this.profile.name || (c.clientId && c.clientId === this.profile.clientId));
+            if (targetIdx >= 0) {
+              latestConfig[targetIdx] = this.profile;
+            } else {
+              latestConfig[this.index] = this.profile;
+            }
             await saveConfig(latestConfig);
             saved = true;
             console.log(`[Auth:${this.profile.name}] ✅ New token saved to DB (attempt ${saveAttempt}).`);
@@ -497,14 +511,26 @@ class TokenManager {
     this.profile.accessToken = null;
     // Also clear from DB so other instances don't keep using the dead token
     loadConfig().then(async config => {
-      if (config[this.index] && (config[this.index].accessToken === dead || !dead)) {
-        config[this.index].accessToken = null;
+      const targetIdx = config.findIndex(c => c.name === this.profile.name || (c.clientId && c.clientId === this.profile.clientId));
+      const prof = targetIdx >= 0 ? config[targetIdx] : config[this.index];
+      if (prof && (prof.accessToken === dead || !dead)) {
+        prof.accessToken = null;
         await saveConfig(config).catch(() => {});
       }
     }).catch(() => {});
   }
 
   async getEarnings() {
+    if (this.profile.isSimulated || this.profile.simulated) {
+      const micros = this.simulatedMicros || 0;
+      return {
+        lifetimeUsd: micros / 1000000,
+        todayUsd: micros / 1000000,
+        lifetimeMicros: micros,
+        todayMicros: micros,
+        blocked: false
+      };
+    }
     let token = await this.getAccessToken();
     if (!token) return null;
 
@@ -558,6 +584,37 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
   let lastCampaignId = "";
 
   async function fetchAd() {
+    if (profile.isSimulated || profile.simulated) {
+      const simulatedCatalog = [
+        { brand: "Warp AI", ad_line: "Warp - Intelligent terminal with AI built-in" },
+        { brand: "Supabase", ad_line: "Supabase - Open-source Firebase alternative with Postgres" },
+        { brand: "Claude Code", ad_line: "Claude Code - Next-generation agentic coding engine" },
+        { brand: "Tailscale", ad_line: "Tailscale - Zero config VPN and mesh networking" },
+        { brand: "Postman", ad_line: "Postman - The API platform for building & testing" },
+        { brand: "Neon", ad_line: "Neon - Serverless Postgres with instant branching" },
+        { brand: "Resend", ad_line: "Resend - Email API designed for developers" }
+      ];
+      const item = simulatedCatalog[Math.floor(Math.random() * simulatedCatalog.length)];
+      const adId = `sim_${Math.floor(Math.random() * 90000 + 10000)}`;
+      const campId = `camp_${item.brand.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const rotationIntervalMs = sessionDuration * 1000;
+      return {
+        ad: {
+          ad_id: adId,
+          campaign_id: campId,
+          brand: item.brand,
+          ad_line: item.ad_line,
+          title_text: item.ad_line,
+          session_token: "simulated_token",
+          billing_strategy: "campaign_tick",
+          _serveSurface: "statusline"
+        },
+        rotationIntervalMs,
+        viewThresholdMs: 10000,
+        tickIntervalMs: 10000
+      };
+    }
+
     let token = await authManager.getAccessToken();
     if (!token) return null;
 
@@ -768,6 +825,14 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
   }
 
   async function sendMetric(eventType, ad, params = {}) {
+    if (profile.isSimulated || profile.simulated) {
+      if (eventType === "view_threshold_met") {
+        authManager.simulatedMicros = (authManager.simulatedMicros || 0) + 100;
+        return { status: 200, billed: true, measurement: "accepted" };
+      }
+      return { status: 200, billed: false, measurement: "accepted" };
+    }
+
     let token = await authManager.getAccessToken();
     if (!token) return null;
 
@@ -1167,7 +1232,11 @@ async function runVirtualClient(name, clientId, authManager, profile = {}) {
   await rotateAd();
 }
 
-async function ensureBoostedConsent(authManager, profileName) {
+async function ensureBoostedConsent(authManager, profileName, profile = {}) {
+  if (profile.isSimulated || profile.simulated) {
+    console.log(`[Auth:${profileName}] 🚀 Simulated Mode: Auto-granted consent scopes.`);
+    return;
+  }
   try {
     const token = await authManager.getAccessToken();
     if (!token) return;
@@ -1219,7 +1288,11 @@ async function ensureBoostedConsent(authManager, profileName) {
   }
 }
 
-async function sendFleetHeartbeat(authManager, profile) {
+async function sendFleetHeartbeat(authManager, profile = {}) {
+  if (profile.isSimulated || profile.simulated) {
+    console.log(`[Fleet:${profile.name}] 💓 Simulated Heartbeat active.`);
+    return;
+  }
   try {
     const token = await authManager.getAccessToken();
     if (!token) return;
@@ -1253,8 +1326,8 @@ async function start() {
   const config = await loadConfig();
   
   const activeProfiles = config.map((p, idx) => ({ p, idx })).filter(item => 
-    item.p.refreshToken &&
-    item.p.refreshToken !== "insert_another_account_refresh_token_here"
+    Boolean(item.p.isSimulated || item.p.simulated) ||
+    Boolean(item.p.refreshToken && item.p.refreshToken !== "insert_another_account_refresh_token_here")
   );
 
   if (activeProfiles.length === 0) {
@@ -1295,14 +1368,14 @@ async function start() {
     authManager.startPreemptiveRefresh();
     
     // Automatically ensure Boosted Mode consent scopes are active on server
-    await ensureBoostedConsent(authManager, p.name);
+    await ensureBoostedConsent(authManager, p.name, p);
 
     // Send initial fleet heartbeat and keep pulse alive every 2 minutes
     await sendFleetHeartbeat(authManager, p);
     setInterval(() => sendFleetHeartbeat(authManager, p), 120000);
 
     const clientsPerInstance = parseInt(process.env.CLIENTS_PER_INSTANCE || '0', 10);
-    const scaleFactor = clientsPerInstance > 0 ? clientsPerInstance : (p.scale || 10);
+    const scaleFactor = (typeof p.scale === 'number' && p.scale > 0) ? p.scale : (clientsPerInstance > 0 ? clientsPerInstance : 10);
 
     // Poll earnings per profile
     const pollEarnings = async () => {

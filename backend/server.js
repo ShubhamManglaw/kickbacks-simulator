@@ -644,12 +644,14 @@ app.post('/api/auth/start-login', checkAuth, async (req, res) => {
       return res.status(502).json({ error: 'Failed to parse OAuth state from Kickbacks redirect' });
     }
 
+    const { scale = 10 } = req.body || {};
     const sessionId = crypto.randomUUID();
     loginSessions.set(sessionId, {
       clientId,
       state,
       loginUrl,
       status: 'pending',
+      scale: Math.max(1, parseInt(scale, 10) || 10),
       createdAt: Date.now()
     });
 
@@ -692,7 +694,7 @@ app.get('/api/auth/poll-login/:sessionId', checkAuth, async (req, res) => {
         name: accountName,
         clientId: session.clientId,
         refreshToken: credentials.refresh_token,
-        scale: 10,
+        scale: session.scale || 10,
         accessToken: credentials.access_token
       };
 
@@ -720,34 +722,43 @@ app.get('/api/auth/poll-login/:sessionId', checkAuth, async (req, res) => {
 
 app.post('/api/auth/add-account', checkAuth, async (req, res) => {
   try {
-    const { name, refreshToken, scale = 10 } = req.body;
-    if (!refreshToken) {
-      return res.status(400).json({ error: 'refreshToken is required' });
-    }
-
-    // Verify refresh token with Kickbacks API
-    const refRes = await fetch(`${KICKBACKS_BASE}/v1/auth/refresh`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken.trim() })
-    });
-
-    if (!refRes.ok) {
-      return res.status(400).json({ error: `Kickbacks rejected token (HTTP ${refRes.status}). Token may be invalid or expired.` });
-    }
-
-    const tokenData = await refRes.json();
-    const cleanToken = tokenData.refresh_token || refreshToken.trim();
-    const clientId = crypto.randomBytes(12).toString("hex");
-
-    // Auto-accept consent with fresh access token
-    if (tokenData.access_token) {
-      await syncAccountConsent(tokenData.access_token);
-    }
-
+    const { name, refreshToken, scale = 10, isSimulated } = req.body;
     const { saveConfig } = require('./db');
     const currentConfig = await loadConfig();
-    const accountName = (name && name.trim()) || `account_${currentConfig.length + 1}_${clientId.slice(0, 6)}`;
+
+    let cleanToken = refreshToken ? refreshToken.trim() : '';
+    let clientId = crypto.randomBytes(12).toString("hex");
+    let accessToken = null;
+    let isSim = Boolean(isSimulated || req.body.type === 'simulated' || !cleanToken || cleanToken === 'simulated');
+
+    if (isSim) {
+      cleanToken = cleanToken || `simulated_refresh_${clientId}`;
+      accessToken = `simulated_access_${clientId}`;
+    } else {
+      // Verify real refresh token with Kickbacks API
+      const refRes = await fetch(`${KICKBACKS_BASE}/v1/auth/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refresh_token: cleanToken })
+      });
+
+      if (!refRes.ok) {
+        return res.status(400).json({
+          error: `Kickbacks rejected token (HTTP ${refRes.status}). Token may be invalid or expired. You can also toggle 'Simulated Account' to test without an active token.`
+        });
+      }
+
+      const tokenData = await refRes.json();
+      cleanToken = tokenData.refresh_token || cleanToken;
+      accessToken = tokenData.access_token || null;
+
+      // Auto-accept consent with fresh access token
+      if (accessToken) {
+        await syncAccountConsent(accessToken);
+      }
+    }
+
+    const accountName = (name && name.trim()) || `${isSim ? 'sim_bot' : 'account'}_${currentConfig.length + 1}_${clientId.slice(0, 6)}`;
     
     // Check if account name already exists
     const existingIdx = currentConfig.findIndex(c => c.name === accountName);
@@ -755,11 +766,12 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
       name: accountName,
       clientId,
       refreshToken: cleanToken,
-      scale: parseInt(scale, 10) || 10,
-      minPromptWait: parseInt(req.body.minPromptWait, 10) || 8,
-      maxPromptWait: parseInt(req.body.maxPromptWait, 10) || 15,
-      sessionDuration: parseInt(req.body.sessionDuration, 10) || 60,
-      accessToken: tokenData.access_token || null
+      scale: Math.max(1, parseInt(scale, 10) || 10),
+      minPromptWait: Math.max(1, parseInt(req.body.minPromptWait, 10) || 8),
+      maxPromptWait: Math.max(1, parseInt(req.body.maxPromptWait, 10) || 15),
+      sessionDuration: Math.max(15, parseInt(req.body.sessionDuration, 10) || 60),
+      accessToken,
+      isSimulated: isSim
     };
 
     if (existingIdx >= 0) {
@@ -770,11 +782,65 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
 
     await saveConfig(currentConfig);
 
-    appendLog(`SYSTEM: Account '${accountName}' saved via dashboard. Restarting simulator fleet...`);
+    appendLog(`SYSTEM: Account '${accountName}' (${isSim ? 'Simulated' : 'Real Kickbacks'}) saved with ${newAccount.scale} bots. Restarting simulator fleet...`);
     stopSimulator();
     setTimeout(() => startSimulator(), 1000);
 
     res.json({ success: true, account: newAccount, totalAccounts: currentConfig.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/account/:accountName/scale', checkAuth, async (req, res) => {
+  try {
+    const { accountName } = req.params;
+    const { scale } = req.body;
+    const parsedScale = parseInt(scale, 10);
+    if (isNaN(parsedScale) || parsedScale < 1) {
+      return res.status(400).json({ error: 'scale must be a positive integer (minimum 1)' });
+    }
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+    const accIdx = currentConfig.findIndex(c => c.name === accountName);
+    if (accIdx < 0) {
+      return res.status(404).json({ error: `Account '${accountName}' not found` });
+    }
+
+    currentConfig[accIdx].scale = parsedScale;
+    await saveConfig(currentConfig);
+
+    appendLog(`SYSTEM: Scaled account '${accountName}' to ${parsedScale} bots. Restarting fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, scale: parsedScale, account: currentConfig[accIdx], config: currentConfig });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/fleet-scale', checkAuth, async (req, res) => {
+  try {
+    const { scale } = req.body;
+    const parsedScale = parseInt(scale, 10);
+    if (isNaN(parsedScale) || parsedScale < 1) {
+      return res.status(400).json({ error: 'scale must be a positive integer (minimum 1)' });
+    }
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+
+    currentConfig.forEach(acc => {
+      acc.scale = parsedScale;
+    });
+
+    await saveConfig(currentConfig);
+
+    appendLog(`SYSTEM: Scaled ALL ${currentConfig.length} accounts to ${parsedScale} bots each (${currentConfig.length * parsedScale} total bots). Restarting fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, scale: parsedScale, totalBots: currentConfig.length * parsedScale, config: currentConfig });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

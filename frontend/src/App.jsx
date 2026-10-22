@@ -84,42 +84,31 @@ export default function App() {
         ...runtimeProfs.map(p => p.name).filter(Boolean)
       ]));
 
-      if (names.length === 0) {
+      names.forEach((accName, accIndex) => {
+        const cfg = configProfs.find(p => p.name === accName) || {};
+        const rt = runtimeProfs.find(p => p.name === accName) || {};
+        const profile = { ...cfg, ...rt };
+        const clients = (s.clients || []).filter(c => 
+          c.name.startsWith(accName) || 
+          (names.length === 1 && !c.name.includes('account_'))
+        );
         list.push({
-          id: `${url}-default`,
+          id: `${url}-${accName}`,
           url,
-          name: s.instanceName || 'Primary Account',
-          profile: s.profiles?.[0] || null,
-          clients: s.clients || [],
+          name: accName,
+          accIndex,
+          profile,
+          config: cfg,
+          scale: cfg.scale || 10,
+          minPromptWait: cfg.minPromptWait || 8,
+          maxPromptWait: cfg.maxPromptWait || 15,
+          sessionDuration: cfg.sessionDuration || 60,
+          clients,
           isOnline: s.online,
-          isRunning: s.running
+          isRunning: s.running,
+          isSimulated: Boolean(cfg.isSimulated || cfg.simulated || cfg.refreshToken?.startsWith('simulated_'))
         });
-      } else {
-        names.forEach((accName, accIndex) => {
-          const cfg = configProfs.find(p => p.name === accName) || {};
-          const rt = runtimeProfs.find(p => p.name === accName) || {};
-          const profile = { ...cfg, ...rt };
-          const clients = (s.clients || []).filter(c => 
-            c.name.startsWith(accName) || 
-            (names.length === 1 && !c.name.includes('account_'))
-          );
-          list.push({
-            id: `${url}-${accName}`,
-            url,
-            name: accName,
-            accIndex,
-            profile,
-            config: cfg,
-            scale: cfg.scale || 10,
-            minPromptWait: cfg.minPromptWait || 8,
-            maxPromptWait: cfg.maxPromptWait || 15,
-            sessionDuration: cfg.sessionDuration || 60,
-            clients,
-            isOnline: s.online,
-            isRunning: s.running
-          });
-        });
-      }
+      });
     });
     return list;
   }, [statuses]);
@@ -130,6 +119,7 @@ export default function App() {
   const [authSession, setAuthSession] = useState(null);
   const [authStatus, setAuthStatus] = useState('idle');
   const [authErrorMsg, setAuthErrorMsg] = useState('');
+  const [googleScale, setGoogleScale] = useState(10);
 
   const [manualAccountName, setManualAccountName] = useState('');
   const [manualRefreshToken, setManualRefreshToken] = useState('');
@@ -140,6 +130,17 @@ export default function App() {
   const [manualSaving, setManualSaving] = useState(false);
   const [manualErrorMsg, setManualErrorMsg] = useState('');
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
+
+  // Simulated Account State
+  const [simulatedName, setSimulatedName] = useState('');
+  const [simulatedScale, setSimulatedScale] = useState(10);
+  const [simulatedSaving, setSimulatedSaving] = useState(false);
+  const [simulatedErrorMsg, setSimulatedErrorMsg] = useState('');
+
+  // Real-Time Bot Scaling State
+  const [scalingAccountName, setScalingAccountName] = useState(null);
+  const [fleetScaleInput, setFleetScaleInput] = useState(10);
+  const [fleetScaleSaving, setFleetScaleSaving] = useState(false);
 
   // Manage Account / Clients Timing Modal State
   const [accountToManage, setAccountToManage] = useState(null);
@@ -482,7 +483,8 @@ export default function App() {
         headers: {
           'Authorization': `Bearer ${password}`,
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({ scale: parseInt(googleScale, 10) || 10 })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -574,6 +576,97 @@ export default function App() {
       setManualErrorMsg(err.message);
     } finally {
       setManualSaving(false);
+    }
+  };
+
+  // Quick Scale Specific Account
+  const handleQuickScaleAccount = async (acc, newScale) => {
+    const scaleVal = Math.max(1, parseInt(newScale, 10));
+    if (isNaN(scaleVal)) return;
+    setScalingAccountName(acc.name);
+    const targetUrl = acc.url || instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    try {
+      const res = await fetch(`${targetUrl}/api/auth/account/${encodeURIComponent(acc.name)}/scale`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ scale: scaleVal })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to scale account');
+      }
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      alert(`Error scaling account '${acc.name}': ${err.message}`);
+    } finally {
+      setScalingAccountName(null);
+    }
+  };
+
+  // Quick Scale Entire Fleet
+  const handleQuickScaleFleet = async (newScale) => {
+    const scaleVal = Math.max(1, parseInt(newScale, 10));
+    if (isNaN(scaleVal)) return;
+    setFleetScaleSaving(true);
+    const targetUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    try {
+      const res = await fetch(`${targetUrl}/api/auth/fleet-scale`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ scale: scaleVal })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to scale fleet');
+      }
+      setFleetScaleInput(scaleVal);
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      alert(`Error scaling fleet: ${err.message}`);
+    } finally {
+      setFleetScaleSaving(false);
+    }
+  };
+
+  // Create Simulated Account
+  const handleCreateSimulatedAccount = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    setSimulatedSaving(true);
+    setSimulatedErrorMsg('');
+    const targetUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    try {
+      const res = await fetch(`${targetUrl}/api/auth/add-account`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: simulatedName.trim() || `sim_bot_${displayedAccounts.length + 1}`,
+          isSimulated: true,
+          scale: Math.max(1, parseInt(simulatedScale, 10) || 10),
+          minPromptWait: 6,
+          maxPromptWait: 12,
+          sessionDuration: 60
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to create simulated account');
+      }
+      setSimulatedName('');
+      setRefreshTrigger(prev => prev + 1);
+      setShowConnectModal(false);
+    } catch (err) {
+      setSimulatedErrorMsg(err.message);
+    } finally {
+      setSimulatedSaving(false);
     }
   };
 
@@ -1141,140 +1234,372 @@ export default function App() {
               </div>
             </section>
 
+            {/* Simulation & Bot Fleet Concurrency Controller */}
+            <div className="sim-control-panel">
+              <div className="sim-control-header">
+                <div>
+                  <h3 className="sim-control-title">
+                    <Cpu size={18} style={{ color: 'var(--accent-purple)' }} />
+                    Simulation Bot Scaler &amp; Fleet Concurrency
+                  </h3>
+                  <p className="sim-control-desc">
+                    Adjust concurrent bot load per account or across the entire fleet in real-time.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <span className="chip purple" style={{ fontSize: '12px', padding: '4px 10px', fontWeight: 700 }}>
+                    {displayedAccounts.length} Account{displayedAccounts.length === 1 ? '' : 's'}
+                  </span>
+                  <span className="chip cyan" style={{ fontSize: '12px', padding: '4px 10px', fontWeight: 700 }}>
+                    {displayedAccounts.reduce((sum, a) => sum + (a.scale || 10), 0)} Total Bots
+                  </span>
+                </div>
+              </div>
+
+              {/* Fleet-Wide Concurrency Control Row */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '14px', paddingTop: '10px', borderTop: '1px solid rgba(124, 58, 237, 0.12)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                    Scale All Accounts:
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <button
+                      type="button"
+                      className="btn-stepper"
+                      disabled={fleetScaleSaving || fleetScaleInput <= 1}
+                      onClick={() => setFleetScaleInput(prev => Math.max(1, prev - 1))}
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={fleetScaleInput}
+                      onChange={e => setFleetScaleInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      style={{
+                        width: '60px',
+                        textAlign: 'center',
+                        fontWeight: 700,
+                        fontSize: '13px',
+                        padding: '4px',
+                        border: '1px solid var(--hairline)',
+                        borderRadius: 'var(--rounded-sm)',
+                        color: 'var(--accent-purple)'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn-stepper"
+                      disabled={fleetScaleSaving || fleetScaleInput >= 100}
+                      onClick={() => setFleetScaleInput(prev => Math.min(100, prev + 1))}
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn-primary-pill"
+                    style={{ padding: '6px 14px', fontSize: '12px' }}
+                    disabled={fleetScaleSaving || displayedAccounts.length === 0}
+                    onClick={() => handleQuickScaleFleet(fleetScaleInput)}
+                  >
+                    {fleetScaleSaving ? <RefreshCw size={12} className="spinning" /> : <SlidersHorizontal size={12} />}
+                    <span>{fleetScaleSaving ? 'Applying...' : 'Apply to All'}</span>
+                  </button>
+
+                  <div style={{ display: 'flex', gap: '4px', marginLeft: '6px' }}>
+                    {[5, 10, 25, 50].map(cnt => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        className="preset-chip-btn"
+                        style={{ fontSize: '11px', padding: '4px 10px' }}
+                        disabled={fleetScaleSaving || displayedAccounts.length === 0}
+                        onClick={() => {
+                          setFleetScaleInput(cnt);
+                          handleQuickScaleFleet(cnt);
+                        }}
+                      >
+                        {cnt} bots
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn-outline-pill"
+                    style={{ padding: '6px 14px', fontSize: '12px', color: 'var(--accent-purple)', borderColor: 'rgba(124, 58, 237, 0.35)' }}
+                    onClick={() => {
+                      setAuthStatus('idle');
+                      setAuthErrorMsg('');
+                      setManualErrorMsg('');
+                      setManualSuccessMsg('');
+                      setShowConnectModal(true);
+                    }}
+                  >
+                    <UserPlus size={13} />
+                    <span>+ Add Account</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Accounts & Divided Clients Telemetry */}
             <div className="section-header" style={{ marginBottom: '14px' }}>
               <div>
                 <p className="section-kicker">Accounts &amp; Virtual Clients</p>
-                <h2 className="section-title">Fleet Accounts ({instances.length})</h2>
+                <h2 className="section-title">Fleet Accounts ({displayedAccounts.length})</h2>
               </div>
               <span className="panel-count">{allClientsList.length} Clients Total</span>
             </div>
 
-            {/* Account Selector Filter Bar */}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
-              <button
-                className={`filter-tab-pill ${selectedAccount === 'all' ? 'active' : ''}`}
-                onClick={() => setSelectedAccount('all')}
-              >
-                All Accounts ({allClientsList.length})
-              </button>
-              {displayedAccounts.map((acc, idx) => {
-                const count = acc.clients?.length || 0;
-                return (
+            {displayedAccounts.length === 0 ? (
+              <div className="onboarding-hero">
+                <div className="onboarding-icon-ring">
+                  <Cpu size={32} />
+                </div>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 8px 0', color: 'var(--ink)' }}>
+                  No Accounts Active in Simulation
+                </h3>
+                <p style={{ fontSize: '14px', color: 'var(--steel)', maxWidth: '540px', margin: '0 auto 24px auto', lineHeight: 1.5 }}>
+                  Add multiple Kickbacks accounts to simulate concurrent virtual bots generating real or simulated ad revenue and tracking live telemetry.
+                </p>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
                   <button
-                    key={acc.id}
-                    className={`filter-tab-pill ${selectedAccount === String(idx) ? 'active' : ''}`}
-                    onClick={() => setSelectedAccount(String(idx))}
+                    type="button"
+                    className="btn-primary-pill"
+                    onClick={() => {
+                      setConnectTab('google');
+                      setShowConnectModal(true);
+                    }}
                   >
-                    #{idx + 1} {acc.name} ({count})
+                    <Globe size={14} />
+                    <span>Sign in with Google</span>
                   </button>
-                );
-              })}
-              <button
-                className="filter-tab-pill"
-                style={{ color: 'var(--accent-purple)', borderColor: 'rgba(124, 58, 237, 0.3)', background: 'rgba(124, 58, 237, 0.05)', fontWeight: 600 }}
-                onClick={() => {
-                  setAuthStatus('idle');
-                  setAuthErrorMsg('');
-                  setManualErrorMsg('');
-                  setManualSuccessMsg('');
-                  setShowConnectModal(true);
-                }}
-              >
-                <UserPlus size={12} />
-                <span>+ Connect Kickbacks Account</span>
-              </button>
-            </div>
+                  <button
+                    type="button"
+                    className="btn-outline-pill"
+                    onClick={() => {
+                      setConnectTab('token');
+                      setShowConnectModal(true);
+                    }}
+                  >
+                    <Key size={14} />
+                    <span>Paste Refresh Token</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    style={{ padding: '8px 16px', fontSize: '13px', background: 'rgba(124, 58, 237, 0.08)', color: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+                    onClick={() => handleCreateSimulatedAccount(10)}
+                  >
+                    <Sparkles size={14} />
+                    <span>⚡ Add Test Simulated Bot (10 Bots)</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Account Selector Filter Bar */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
+                  <button
+                    className={`filter-tab-pill ${selectedAccount === 'all' ? 'active' : ''}`}
+                    onClick={() => setSelectedAccount('all')}
+                  >
+                    All Accounts ({allClientsList.length})
+                  </button>
+                  {displayedAccounts.map((acc, idx) => {
+                    const count = acc.clients?.length || 0;
+                    return (
+                      <button
+                        key={acc.id}
+                        className={`filter-tab-pill ${selectedAccount === String(idx) ? 'active' : ''}`}
+                        onClick={() => setSelectedAccount(String(idx))}
+                      >
+                        #{idx + 1} {acc.name} ({count})
+                      </button>
+                    );
+                  })}
+                  <button
+                    className="filter-tab-pill"
+                    style={{ color: 'var(--accent-purple)', borderColor: 'rgba(124, 58, 237, 0.3)', background: 'rgba(124, 58, 237, 0.05)', fontWeight: 600 }}
+                    onClick={() => {
+                      setAuthStatus('idle');
+                      setAuthErrorMsg('');
+                      setManualErrorMsg('');
+                      setManualSuccessMsg('');
+                      setShowConnectModal(true);
+                    }}
+                  >
+                    <UserPlus size={12} />
+                    <span>+ Connect Account</span>
+                  </button>
+                </div>
 
-            {/* Divided Account Panels with their respective clients */}
-            <div className="account-sections-list">
-              {displayedAccounts.map((acc, idx) => {
-                if (selectedAccount !== 'all' && selectedAccount !== String(idx)) {
-                  return null;
-                }
-                const { url, name: accountName, profile, clients, isOnline, isRunning } = acc;
-                const activeClientsCount = clients.filter(c => c.lastStatus !== 'Stopped' && c.lastStatus !== 'inactive').length;
-                const acctClientRev = clients.reduce((sum, c) => sum + (parseFloat(c.revenue_usd) || 0), 0);
-                const todayUsd = (profile?.currentTodayUsd !== undefined && profile.currentTodayUsd > 0) ? profile.currentTodayUsd : acctClientRev;
-                const lifetimeUsd = (profile?.currentLifetimeUsd !== undefined && profile.currentLifetimeUsd > 0) ? (profile.currentLifetimeUsd + acctClientRev) : acctClientRev;
+                {/* Divided Account Panels with their respective clients */}
+                <div className="account-sections-list">
+                  {displayedAccounts.map((acc, idx) => {
+                    if (selectedAccount !== 'all' && selectedAccount !== String(idx)) {
+                      return null;
+                    }
+                    const { url, name: accountName, profile, clients, isOnline, isRunning, isSimulated } = acc;
+                    const activeClientsCount = clients.filter(c => c.lastStatus !== 'Stopped' && c.lastStatus !== 'inactive').length;
+                    const acctClientRev = clients.reduce((sum, c) => sum + (parseFloat(c.revenue_usd) || 0), 0);
+                    const todayUsd = (profile?.currentTodayUsd !== undefined && profile.currentTodayUsd > 0) ? profile.currentTodayUsd : acctClientRev;
+                    const lifetimeUsd = (profile?.currentLifetimeUsd !== undefined && profile.currentLifetimeUsd > 0) ? (profile.currentLifetimeUsd + acctClientRev) : acctClientRev;
 
-                return (
-                  <div key={acc.id} className="panel" style={{ marginBottom: '22px', padding: 0, overflow: 'hidden' }}>
-                    {/* Dedicated Account Header Bar */}
-                    <div style={{
-                      padding: '16px 20px',
-                      backgroundColor: 'var(--canvas)',
-                      borderBottom: '1px solid var(--hairline)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      flexWrap: 'wrap',
-                      gap: '12px'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <span className="chip purple" style={{ fontSize: '11px', fontWeight: 600, padding: '3px 8px' }}>
-                          Account #{idx + 1}
-                        </span>
-                        <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{accountName}</span>
-                        <span className={`chip ${isOnline ? (isRunning ? 'green' : 'neutral') : 'neutral'}`} style={{ fontSize: '10px', padding: '2px 8px' }}>
-                          {isOnline ? (isRunning ? 'Running' : 'Idle') : 'Offline'}
-                        </span>
-                        <span className="chip purple" style={{ fontSize: '10px', padding: '2px 8px' }}>
-                          {acc.scale || clients.length || 10} Clients
-                        </span>
-                        <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
-                          <Timer size={10} /> {acc.minPromptWait || 8}–{acc.maxPromptWait || 15}s wait
-                        </span>
-                        <span className="chip neutral" style={{ fontSize: '10px', padding: '2px 8px' }}>
-                          {acc.sessionDuration || 60}s session
-                        </span>
-                        <span style={{ fontSize: '11px', color: 'var(--steel)', fontFamily: 'var(--font-code)' }}>{url}</span>
-                      </div>
+                    return (
+                      <div key={acc.id} className="panel" style={{ marginBottom: '22px', padding: 0, overflow: 'hidden' }}>
+                        {/* Dedicated Account Header Bar */}
+                        <div style={{
+                          padding: '16px 20px',
+                          backgroundColor: 'var(--canvas)',
+                          borderBottom: '1px solid var(--hairline)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: '12px'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span className="chip purple" style={{ fontSize: '11px', fontWeight: 600, padding: '3px 8px' }}>
+                              Account #{idx + 1}
+                            </span>
+                            <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{accountName}</span>
+                            {isSimulated ? (
+                              <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                                Simulated Bot
+                              </span>
+                            ) : (
+                              <span className="chip purple" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                                Kickbacks Real
+                              </span>
+                            )}
+                            <span className={`chip ${isOnline ? (isRunning ? 'green' : 'neutral') : 'neutral'}`} style={{ fontSize: '10px', padding: '2px 8px' }}>
+                              {isOnline ? (isRunning ? 'Running' : 'Idle') : 'Offline'}
+                            </span>
+                            <span className="chip purple" style={{ fontSize: '10px', padding: '2px 8px', fontWeight: 700 }}>
+                              {acc.scale || 10} Bots
+                            </span>
+                            <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                              <Timer size={10} /> {acc.minPromptWait || 8}–{acc.maxPromptWait || 15}s wait
+                            </span>
+                            <span className="chip neutral" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                              {acc.sessionDuration || 60}s session
+                            </span>
+                          </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
-                        <div style={{ display: 'flex', gap: '16px', fontSize: '12px' }}>
-                          <span style={{ color: 'var(--steel)' }}>Active: <strong style={{ color: 'var(--ink)' }}>{activeClientsCount}/{clients.length}</strong></span>
-                          <span style={{ color: 'var(--steel)' }}>Earned: <strong style={{ color: 'var(--brand-green-dark)' }}>${acctClientRev.toFixed(6)}</strong></span>
-                          <span style={{ color: 'var(--steel)' }}>Today: <strong style={{ color: 'var(--ink)' }}>${todayUsd.toFixed(4)}</strong></span>
-                          <span style={{ color: 'var(--steel)' }}>Lifetime: <strong style={{ color: 'var(--ink)', fontFamily: 'var(--font-code)' }}>${lifetimeUsd.toFixed(2)}</strong></span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                            <div style={{ display: 'flex', gap: '16px', fontSize: '12px' }}>
+                              <span style={{ color: 'var(--steel)' }}>Active Bots: <strong style={{ color: 'var(--ink)' }}>{activeClientsCount}/{acc.scale || clients.length || 10}</strong></span>
+                              <span style={{ color: 'var(--steel)' }}>Earned: <strong style={{ color: 'var(--brand-green-dark)' }}>${acctClientRev.toFixed(6)}</strong></span>
+                              <span style={{ color: 'var(--steel)' }}>Today: <strong style={{ color: 'var(--ink)' }}>${todayUsd.toFixed(4)}</strong></span>
+                              <span style={{ color: 'var(--steel)' }}>Lifetime: <strong style={{ color: 'var(--ink)', fontFamily: 'var(--font-code)' }}>${lifetimeUsd.toFixed(2)}</strong></span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              {isOnline && !isRunning && (
+                                <button className="btn-card-action start" onClick={() => startSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
+                                  <Play size={10} fill="currentColor" /> Start Bots
+                                </button>
+                              )}
+                              {isOnline && isRunning && (
+                                <button className="btn-card-action stop" onClick={() => stopSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
+                                  <Square size={9} fill="currentColor" /> Stop Bots
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="btn-card-action"
+                                title={`Configure clients & timings for ${accountName}`}
+                                onClick={() => handleOpenManageAccount(acc)}
+                                style={{ padding: '4px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(124, 58, 237, 0.35)', color: 'var(--accent-purple)' }}
+                              >
+                                <SlidersHorizontal size={10} /> Timing
+                              </button>
+                              <button
+                                className="btn-card-action stop"
+                                title={`Remove account ${accountName}`}
+                                onClick={() => handleDeleteAccount(accountName)}
+                                style={{ padding: '4px 10px', fontSize: '11px', color: 'var(--accent-red)' }}
+                              >
+                                <Trash2 size={10} /> Remove
+                              </button>
+                            </div>
+                          </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          {isOnline && !isRunning && (
-                            <button className="btn-card-action start" onClick={() => startSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
-                              <Play size={10} fill="currentColor" /> Start Fleet
-                            </button>
-                          )}
-                          {isOnline && isRunning && (
-                            <button className="btn-card-action stop" onClick={() => stopSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
-                              <Square size={9} fill="currentColor" /> Stop Fleet
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="btn-card-action"
-                            title={`Configure clients & timings for ${accountName}`}
-                            onClick={() => handleOpenManageAccount(acc)}
-                            style={{ padding: '4px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(124, 58, 237, 0.35)', color: 'var(--accent-purple)' }}
-                          >
-                            <SlidersHorizontal size={10} /> Configure
-                          </button>
-                          <button
-                            className="btn-card-action stop"
-                            title={`Remove account ${accountName}`}
-                            onClick={() => handleDeleteAccount(accountName)}
-                            style={{ padding: '4px 10px', fontSize: '11px', color: 'var(--accent-red)' }}
-                          >
-                            <Trash2 size={10} /> Remove
-                          </button>
-                          {!isOnline && (
-                            <button className="btn-card-action disabled" disabled style={{ padding: '4px 12px', fontSize: '11px' }}>
-                              Offline
-                            </button>
+                        {/* Inline Real-Time Bot Scaler Bar */}
+                        <div style={{
+                          padding: '10px 20px',
+                          backgroundColor: 'rgba(0, 30, 43, 0.02)',
+                          borderBottom: '1px solid var(--hairline)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: '12px'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <Cpu size={14} style={{ color: 'var(--accent-purple)' }} />
+                              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>Adjust Bots:</span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <button
+                                type="button"
+                                className="btn-stepper"
+                                title="Decrease 1 bot"
+                                disabled={scalingAccountName === accountName || (acc.scale || 10) <= 1}
+                                onClick={() => handleQuickScaleAccount(acc, Math.max(1, (acc.scale || 10) - 1))}
+                              >
+                                -
+                              </button>
+                              <span style={{ minWidth: '55px', textAlign: 'center', fontWeight: 700, fontSize: '13px', color: 'var(--accent-purple)' }}>
+                                {acc.scale || 10} bots
+                              </span>
+                              <button
+                                type="button"
+                                className="btn-stepper"
+                                title="Increase 1 bot"
+                                disabled={scalingAccountName === accountName || (acc.scale || 10) >= 100}
+                                onClick={() => handleQuickScaleAccount(acc, (acc.scale || 10) + 1)}
+                              >
+                                +
+                              </button>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span style={{ fontSize: '11px', color: 'var(--steel)' }}>Presets:</span>
+                              {[5, 10, 25, 50].map(cnt => (
+                                <button
+                                  key={cnt}
+                                  type="button"
+                                  className={`chip-preset-small ${(acc.scale || 10) === cnt ? 'active' : ''}`}
+                                  disabled={scalingAccountName === accountName}
+                                  onClick={() => handleQuickScaleAccount(acc, cnt)}
+                                >
+                                  {cnt}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {scalingAccountName === accountName ? (
+                            <span style={{ fontSize: '11px', color: 'var(--accent-purple)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <RefreshCw size={11} className="spinning" /> Applying new bot scale...
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: '11px', color: 'var(--steel)' }}>
+                              {clients.length} / {acc.scale || 10} virtual clients in active loop
+                            </span>
                           )}
                         </div>
-                      </div>
-                    </div>
 
                     {/* Table of Clients Divided to THIS Account */}
                     {clients.length === 0 ? (
@@ -1341,8 +1666,10 @@ export default function App() {
                 );
               })}
             </div>
-          </div>
+          </>
         )}
+      </div>
+    )}
 
         {/* TAB 2: ANALYTICS VIEW */}
         {activeTab === 'analytics' && (
@@ -1967,6 +2294,13 @@ export default function App() {
                 <Key size={13} />
                 <span>Manual Refresh Token</span>
               </button>
+              <button
+                className={`modal-tab-btn ${connectTab === 'simulated' ? 'active' : ''}`}
+                onClick={() => setConnectTab('simulated')}
+              >
+                <Sparkles size={13} />
+                <span>Simulated Test Bot</span>
+              </button>
             </div>
 
             <div className="modal-body">
@@ -1980,9 +2314,34 @@ export default function App() {
                       <h3 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--ink)' }}>
                         Sign in with Google
                       </h3>
-                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 20px 0', lineHeight: 1.5 }}>
+                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 16px 0', lineHeight: 1.5 }}>
                         Click below to authenticate with Kickbacks via Google. Terms of Service and Boosted Mode consent scopes are accepted automatically.
                       </p>
+
+                      <div style={{ marginBottom: '18px', textAlign: 'left', background: 'var(--canvas)', padding: '12px 14px', borderRadius: 'var(--rounded-md)', border: '1px solid var(--hairline)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)', margin: 0 }}>
+                            Initial Bot Concurrency:
+                          </label>
+                          <span className="chip purple" style={{ fontSize: '11px', padding: '1px 8px' }}>
+                            {googleScale} Bots
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          {[5, 10, 25, 50].map(cnt => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              className={`preset-chip-btn ${googleScale === cnt ? 'active' : ''}`}
+                              style={{ flex: 1, justifyContent: 'center', fontSize: '11px', padding: '4px' }}
+                              onClick={() => setGoogleScale(cnt)}
+                            >
+                              {cnt} bots
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       <button
                         type="button"
                         className="btn-primary-pill"
@@ -2096,7 +2455,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              ) : (
+              ) : connectTab === 'token' ? (
                 <form onSubmit={handleManualAddAccount}>
                   <div className="form-group" style={{ marginBottom: '14px' }}>
                     <label htmlFor="manualAccountName">Account Name (Optional)</label>
@@ -2124,20 +2483,35 @@ export default function App() {
                   </div>
 
                   <div className="form-group" style={{ marginBottom: '14px' }}>
-                    <label htmlFor="manualScale">Virtual Clients Scale</label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <label htmlFor="manualScale" style={{ margin: 0, fontWeight: 700 }}>Virtual Bots Scale</label>
+                      <span className="chip purple" style={{ fontSize: '11px', padding: '1px 8px' }}>
+                        {manualScale} Bots
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                      {[5, 10, 25, 50].map(cnt => (
+                        <button
+                          key={cnt}
+                          type="button"
+                          className={`preset-chip-btn ${manualScale === cnt ? 'active' : ''}`}
+                          style={{ flex: 1, justifyContent: 'center', fontSize: '11px', padding: '4px' }}
+                          onClick={() => setManualScale(cnt)}
+                        >
+                          {cnt} bots
+                        </button>
+                      ))}
+                    </div>
                     <input
                       id="manualScale"
                       type="number"
                       min="1"
-                      max="50"
+                      max="100"
                       className="form-input"
                       value={manualScale}
-                      onChange={e => setManualScale(e.target.value)}
+                      onChange={e => setManualScale(Math.max(1, parseInt(e.target.value, 10) || 1))}
                       required
                     />
-                    <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
-                      Number of simulated concurrent clients for this account (recommended: 5–10).
-                    </span>
                   </div>
 
                   <div className="form-group" style={{ marginBottom: '14px' }}>
@@ -2208,6 +2582,85 @@ export default function App() {
                   >
                     <Key size={14} />
                     <span>{manualSaving ? 'Verifying & Saving...' : 'Save & Start Simulating'}</span>
+                  </button>
+                </form>
+              ) : (
+                /* Simulated Test Bot Tab */
+                <form onSubmit={handleCreateSimulatedAccount}>
+                  <div style={{
+                    padding: '12px 16px',
+                    backgroundColor: 'rgba(124, 58, 237, 0.05)',
+                    borderRadius: 'var(--rounded-md)',
+                    border: '1px solid rgba(124, 58, 237, 0.2)',
+                    marginBottom: '16px',
+                    fontSize: '13px',
+                    color: 'var(--charcoal)',
+                    lineHeight: 1.5
+                  }}>
+                    <strong style={{ color: 'var(--accent-purple)', display: 'block', marginBottom: '2px' }}>
+                      ⚡ Zero-Auth Test Bot
+                    </strong>
+                    Spawns simulated virtual bots locally. Perfect for stress-testing concurrency, bot scaling, and dashboard charts without needing Google credentials.
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                    <label htmlFor="simulatedName">Bot Account Name</label>
+                    <input
+                      id="simulatedName"
+                      type="text"
+                      className="form-input"
+                      placeholder={`e.g. sim_bot_${displayedAccounts.length + 1}`}
+                      value={simulatedName}
+                      onChange={e => setSimulatedName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '18px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <label htmlFor="simulatedScale" style={{ margin: 0, fontWeight: 700 }}>Number of Virtual Bots</label>
+                      <span className="chip purple" style={{ fontSize: '11px', padding: '1px 8px' }}>
+                        {simulatedScale} Bots
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                      {[5, 10, 25, 50].map(cnt => (
+                        <button
+                          key={cnt}
+                          type="button"
+                          className={`preset-chip-btn ${simulatedScale === cnt ? 'active' : ''}`}
+                          style={{ flex: 1, justifyContent: 'center', fontSize: '11px', padding: '5px' }}
+                          onClick={() => setSimulatedScale(cnt)}
+                        >
+                          {cnt} bots
+                        </button>
+                      ))}
+                    </div>
+
+                    <input
+                      id="simulatedScale"
+                      type="number"
+                      min="1"
+                      max="100"
+                      className="form-input"
+                      value={simulatedScale}
+                      onChange={e => setSimulatedScale(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      required
+                    />
+                  </div>
+
+                  {simulatedErrorMsg && (
+                    <div className="auth-error" style={{ marginBottom: '16px' }}>{simulatedErrorMsg}</div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="btn-primary-pill"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    disabled={simulatedSaving}
+                  >
+                    <Sparkles size={14} />
+                    <span>{simulatedSaving ? 'Spawning Bots...' : `Create Account with ${simulatedScale} Bots`}</span>
                   </button>
                 </form>
               )}

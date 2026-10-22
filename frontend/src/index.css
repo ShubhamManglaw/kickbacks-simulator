@@ -1657,3 +1657,130 @@ button:disabled {
   border-bottom: 1px solid var(--hairline);
   color: var(--ink);
 }
+
+/* ==========================================================================
+   Simulation Control Bar & Bot Stepper Widgets
+   ========================================================================== */
+.sim-control-panel {
+  background: linear-gradient(135deg, rgba(0, 30, 43, 0.02) 0%, rgba(124, 58, 237, 0.05) 100%);
+  border: 1px solid rgba(124, 58, 237, 0.22);
+  border-radius: var(--rounded-lg);
+  padding: 18px 22px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 10px rgba(0, 30, 43, 0.04);
+}
+
+.sim-control-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.sim-control-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-control-desc {
+  font-size: 12px;
+  color: var(--steel);
+  margin: 0;
+}
+
+.sim-control-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-stepper {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--rounded-sm);
+  background: var(--canvas);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  user-select: none;
+}
+
+.btn-stepper:hover:not(:disabled) {
+  background: var(--surface-soft);
+  border-color: var(--accent-purple);
+  color: var(--accent-purple);
+}
+
+.btn-stepper:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chip-preset-small {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--rounded-sm);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  color: var(--steel);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.chip-preset-small:hover {
+  border-color: var(--accent-purple);
+  color: var(--accent-purple);
+  background: rgba(124, 58, 237, 0.05);
+}
+
+.chip-preset-small.active {
+  background: var(--accent-purple);
+  color: #ffffff;
+  border-color: var(--accent-purple);
+}
+
+.onboarding-hero {
+  text-align: center;
+  padding: 40px 24px;
+  background: linear-gradient(180deg, var(--canvas) 0%, rgba(124, 58, 237, 0.03) 100%);
+  border: 2px dashed rgba(124, 58, 237, 0.25);
+  border-radius: var(--rounded-lg);
+  margin-bottom: 24px;
+}
+
+.onboarding-icon-ring {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.15) 0%, rgba(0, 237, 100, 0.15) 100%);
+  color: var(--accent-purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px auto;
+  border: 1px solid rgba(124, 58, 237, 0.25);
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

@@ -154,14 +154,14 @@ pkill -9 -f "vite" 2>/dev/null || true
 # 5. Launch Backend Engine
 # ------------------------------------------------------------------
 echo "2. Starting unified multi-account backend engine ($CLIENTS_PER_INSTANCE clients per account)..."
-(
-  PORT=3001 \
-  INSTANCE_NAME="kickbacks-fleet" \
-  CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
-  TOTAL_INSTANCES=1 \
-  nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_1.log" 2>&1 &
-)
-echo "   -> [Backend API] Unified engine live on http://localhost:3001"
+PORT=3001 \
+INSTANCE_NAME="kickbacks-fleet" \
+CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
+TOTAL_INSTANCES=1 \
+nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_1.log" 2>&1 &
+BACKEND_PID=$!
+disown $BACKEND_PID 2>/dev/null || true
+echo "   -> [Backend API] Unified engine live on http://localhost:3001 (PID: $BACKEND_PID)"
 
 # ------------------------------------------------------------------
 # 6. Launch React Frontend Dashboard
@@ -170,6 +170,9 @@ echo "3. Starting React Frontend Dashboard..."
 (
   cd "$DIR/frontend" && \
   nohup ./node_modules/.bin/vite --port 5174 --host 0.0.0.0 </dev/null >> "$DIR/logs/frontend.log" 2>&1 &
+  FRONTEND_PID=$!
+  disown $FRONTEND_PID 2>/dev/null || true
+  echo $FRONTEND_PID > "$DIR/logs/frontend.pid"
 )
 echo "   -> [Frontend] Dashboard starting on http://localhost:5174"
 

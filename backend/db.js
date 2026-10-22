@@ -263,8 +263,14 @@ function clearLocalClientStats(instanceName) {
         delete localClientStats[key];
       }
     });
+    if (process.env.DATABASE_URL) {
+      runPgQuery('DELETE FROM client_stats WHERE instance_name = $1;', [instanceName]).catch(() => {});
+    }
   } else {
     localClientStats = {};
+    if (process.env.DATABASE_URL) {
+      runPgQuery('DELETE FROM client_stats;').catch(() => {});
+    }
   }
 }
 
