@@ -11,6 +11,8 @@ cd "$DIR"
 
 mkdir -p "$DIR/logs"
 
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 # ------------------------------------------------------------------
 # 1. Environment & Node.js 20+ Provisioning
 # ------------------------------------------------------------------
