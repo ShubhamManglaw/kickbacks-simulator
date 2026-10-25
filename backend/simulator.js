@@ -1402,37 +1402,10 @@ async function start() {
     let startIdx = 0;
     let endIdx = scaleFactor;
 
-    // In multi-instance distributed cluster mode, slice indices across nodes
-    const totalInstances = parseInt(process.env.TOTAL_INSTANCES || '1', 10);
-    if (totalInstances > 1 && targetProfiles.length > 1) {
-      const instanceMatch = process.env.INSTANCE_NAME?.match(/inst(?:ance)?_(\d+)/i);
-      if (instanceMatch) {
-        const instNum = parseInt(instanceMatch[1], 10);
-
-        if (clientsPerInstance > 0) {
-          const numProfiles = targetProfiles.length;
-          const perProfileClients = Math.max(1, Math.floor(clientsPerInstance / numProfiles));
-          const profileIndexInActive = targetProfiles.findIndex(item => item.p.name === p.name);
-          const extra = profileIndexInActive < (clientsPerInstance % numProfiles) ? 1 : 0;
-          const thisProfileCount = perProfileClients + extra;
-
-          startIdx = (instNum - 1) * thisProfileCount;
-          endIdx = startIdx + thisProfileCount;
-        } else {
-          const baseSlice = Math.floor(scaleFactor / totalInstances);
-          const remainder = scaleFactor % totalInstances;
-          
-          const idxZeroBased = instNum - 1;
-          startIdx = idxZeroBased * baseSlice + Math.min(idxZeroBased, remainder);
-          endIdx = startIdx + baseSlice + (idxZeroBased < remainder ? 1 : 0);
-        }
-      }
-    }
-
     console.log(`[Profile:${p.name}] Spawning ${endIdx - startIdx} virtual clients (indices ${startIdx} to ${endIdx - 1})...`);
 
     for (let c = startIdx; c < endIdx; c++) {
-      const virtualClientId = p.clientId || crypto.randomBytes(12).toString("hex");
+      const virtualClientId = crypto.createHash("sha256").update(`${p.clientId || p.name}_v${c + 1}`).digest("hex").slice(0, 24);
 
       const virtualName = `${p.name}_v${c + 1}`;
       // Stagger clients by 3.5s so multiple clients don't hit the exact same tick second
