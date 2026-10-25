@@ -46,7 +46,12 @@ const DEFAULT_INSTANCES = [
   "https://kickbacks-backend-node-2.onrender.com",
   "https://kickbacks-backend-node-3.onrender.com",
   "https://kickbacks-backend-node-4.onrender.com",
-  "https://kickbacks-backend-node-5.onrender.com"
+  "https://kickbacks-backend-node-5.onrender.com",
+  "https://kickbacks-backend-node-6.onrender.com",
+  "https://kickbacks-backend-node-7.onrender.com",
+  "https://kickbacks-backend-node-8.onrender.com",
+  "https://kickbacks-backend-node-9.onrender.com",
+  "https://kickbacks-backend-node-10.onrender.com"
 ];
 
 const TABS = [
@@ -289,8 +294,24 @@ export default function App() {
     };
 
     fetchAllStatuses();
-    const interval = setInterval(fetchAllStatuses, 2000);
-    return () => clearInterval(interval);
+    let interval = setInterval(fetchAllStatuses, 4500);
+
+    const handleVisibilityChange = () => {
+      clearInterval(interval);
+      if (document.hidden) {
+        interval = setInterval(fetchAllStatuses, 30000);
+      } else {
+        fetchAllStatuses();
+        interval = setInterval(fetchAllStatuses, 4500);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [isAuthorized, instances, password, refreshTrigger]);
 
   // Save status metrics to localStorage when statuses change

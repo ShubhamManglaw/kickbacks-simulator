@@ -481,6 +481,11 @@ app.post('/api/login', (req, res) => {
   return res.status(401).json({ error: 'Invalid password' });
 });
 
+app.get('/api/logs', checkAuth, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  res.json({ logs: logs.slice(-limit) });
+});
+
 app.get('/api/status', checkAuth, async (req, res) => {
   let configProfiles = [];
   try {
@@ -566,7 +571,7 @@ app.get('/api/status', checkAuth, async (req, res) => {
       estimatedRevenue: clientRevenueTotal.toFixed(6),
       totalBillingCount
     },
-    logs
+    logs: logs.slice(-30) // Bandwidth optimization: send recent 30 logs in poll
   });
 });
 
