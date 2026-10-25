@@ -110,7 +110,7 @@ async function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const fileData = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-      if (Array.isArray(fileData) && fileData.length > 0) {
+      if (Array.isArray(fileData)) {
         return fileData;
       }
     }
