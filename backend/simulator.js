@@ -1437,7 +1437,7 @@ async function start() {
     console.log(`[Profile:${p.name}] Spawning ${endIdx - startIdx} virtual clients (indices ${startIdx} to ${endIdx - 1})...`);
 
     for (let c = startIdx; c < endIdx; c++) {
-      const virtualClientId = p.clientId || crypto.randomBytes(12).toString("hex");
+      const virtualClientId = crypto.createHash("sha256").update(`${p.clientId || p.name}_v${c + 1}`).digest("hex").slice(0, 24);
 
       const virtualName = `${p.name}_v${c + 1}`;
       // Stagger clients by 3.5s so multiple clients don't hit the exact same tick second

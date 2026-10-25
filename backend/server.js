@@ -990,8 +990,49 @@ if (hasFrontendDist) {
   });
 }
 
+
+// --- CLUSTER RING KEEP-ALIVE PING ENGINE ---
+// Node 1 -> Node 2 -> Node 3 ... -> Node 10 -> Node 1
+// Keeps all 10 Render services awake 24/7 with zero external tools needed!
+function startClusterRingKeepAlive() {
+  const instanceName = process.env.INSTANCE_NAME || "instance_1";
+  const instanceMatch = instanceName.match(/inst(?:ance)?_(\d+)/i);
+  if (!instanceMatch) return;
+
+  const currentNum = parseInt(instanceMatch[1], 10);
+  const total = parseInt(process.env.TOTAL_INSTANCES || "10", 10);
+  const nextNum = (currentNum % total) + 1;
+  const nextNodeUrl = `https://kickbacks-backend-node-${nextNum}.onrender.com/api/health`;
+
+  console.log(`[Cluster Ring] 🔄 Ring keep-alive initialized: Node ${currentNum} -> Node ${nextNum} (${nextNodeUrl})`);
+
+  // Ping every 7 minutes (420,000 ms) - safely under Render 15-minute idle sleep timer
+  const PING_INTERVAL = 7 * 60 * 1000;
+
+  // Stagger initial ping (Node 1 after 20s, Node 2 after 40s...)
+  setTimeout(pingNext, Math.max(10000, currentNum * 20000));
+  setInterval(pingNext, PING_INTERVAL);
+
+  async function pingNext() {
+    try {
+      const res = await fetch(nextNodeUrl, {
+        headers: { "User-Agent": `ClusterMesh/Node-${currentNum}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`[Cluster Ring] 💓 Ping to Node ${nextNum} succeeded (${data.instanceName || "online"}).`);
+      } else {
+        console.warn(`[Cluster Ring] ⚠️ Ping to Node ${nextNum} returned HTTP ${res.status}.`);
+      }
+    } catch (err) {
+      console.warn(`[Cluster Ring] ⚠️ Ping to Node ${nextNum} blip: ${err.message}`);
+    }
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`\n🚀 Kickbacks Simulator Backend is live at http://localhost:${PORT}\n`);
+  startClusterRingKeepAlive();
 
   // Auto-start simulator on boot if config has accounts
   try {
