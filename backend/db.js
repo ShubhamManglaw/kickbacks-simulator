@@ -49,6 +49,18 @@ async function getPgClient() {
 }
 
 async function loadConfig() {
+  // If explicitly provided via INITIAL_CONFIG environment variable
+  if (process.env.INITIAL_CONFIG !== undefined) {
+    try {
+      const initialData = typeof process.env.INITIAL_CONFIG === "string" ? JSON.parse(process.env.INITIAL_CONFIG) : process.env.INITIAL_CONFIG;
+      if (Array.isArray(initialData)) {
+        console.log(`SYSTEM: Config loaded from INITIAL_CONFIG env variable (${initialData.length} profiles).`);
+        return initialData;
+      }
+    } catch (parseErr) {
+      console.error("SYSTEM: Error parsing INITIAL_CONFIG:", parseErr.message);
+    }
+  }
   // 1. If DATABASE_URL is provided, try PostgreSQL
   if (process.env.DATABASE_URL) {
     try {
@@ -151,6 +163,7 @@ async function loadConfig() {
 }
 
 async function saveConfig(config) {
+  delete process.env.INITIAL_CONFIG;
   if (process.env.DATABASE_URL) {
     try {
       await runPgQuery('CREATE TABLE IF NOT EXISTS kickbacks_config (id VARCHAR(50) PRIMARY KEY, data JSONB);');
