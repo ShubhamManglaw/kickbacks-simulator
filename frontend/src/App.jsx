@@ -77,16 +77,15 @@ export default function App() {
   const [instances, setInstances] = useState(() => {
     const isLocal = typeof window !== 'undefined' && isLanHostname(window.location.hostname);
     const resolvedDefault = resolveDefaultBackend();
-    const defaultList = [resolvedDefault];
+    const defaultList = isLocal ? [resolvedDefault] : DEFAULT_INSTANCES;
     const saved = localStorage.getItem('dashboard_instances');
     let list = saved ? JSON.parse(saved) : defaultList;
     list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.includes('kickbacks-backend-nbah.onrender.com') && !item.includes('kickbacks-backend-6big.onrender.com') && !item.match(/:(300[2-9]|3010)/));
     if (!isLocal) {
-      // In production (e.g. Vercel), strip plain localhost/http URLs to avoid mixed content errors
       list = list.filter(item => !item.includes('localhost') && !item.includes('127.0.0.1'));
-    }
-    if (resolvedDefault && !list.includes(resolvedDefault)) {
-      list.unshift(resolvedDefault);
+      DEFAULT_INSTANCES.forEach(u => {
+        if (!list.includes(u)) list.push(u);
+      });
     }
     if (!list || list.length === 0) {
       list = [...defaultList];
@@ -100,11 +99,13 @@ export default function App() {
   const [loading, setLoading] = useState(() => Boolean(localStorage.getItem('dashboard_password')));
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [selectedAccount, setSelectedAccount] = useState('all');
+  const [selectedNodeFilter, setSelectedNodeFilter] = useState('all');
 
   // Derive list of individual accounts across backend instances
   const displayedAccounts = useMemo(() => {
     const list = [];
     Object.keys(statuses).forEach(url => {
+      if (selectedNodeFilter !== 'all' && url !== selectedNodeFilter) return;
       const s = statuses[url];
       if (!s || !s.online) return;
 
@@ -143,7 +144,7 @@ export default function App() {
       });
     });
     return list;
-  }, [statuses]);
+  }, [statuses, selectedNodeFilter]);
 
   // Account Connect Modal & Auth States
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -1452,6 +1453,31 @@ export default function App() {
               </div>
             ) : (
               <>
+                {/* Node Cluster Filter Bar */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--steel)', marginRight: '4px' }}>Cluster Node:</span>
+                  <button
+                    className={`filter-tab-pill ${selectedNodeFilter === 'all' ? 'active' : ''}`}
+                    onClick={() => { setSelectedNodeFilter('all'); setSelectedAccount('all'); }}
+                  >
+                    All Nodes ({instances.length})
+                  </button>
+                  {instances.map((url, idx) => {
+                    const s = statuses[url];
+                    const name = s?.instanceName ? s.instanceName.replace('_', ' ').toUpperCase() : `NODE ${idx + 1}`;
+                    const botCount = s?.clients?.length || 0;
+                    return (
+                      <button
+                        key={url}
+                        className={`filter-tab-pill ${selectedNodeFilter === url ? 'active' : ''}`}
+                        onClick={() => { setSelectedNodeFilter(url); setSelectedAccount('all'); }}
+                      >
+                        {name} ({botCount})
+                      </button>
+                    );
+                  })}
+                </div>
+
                 {/* Account Selector Filter Bar */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
                   <button
