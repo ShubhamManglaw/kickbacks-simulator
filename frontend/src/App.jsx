@@ -1517,6 +1517,9 @@ export default function App() {
                             <span className="chip purple" style={{ fontSize: '11px', fontWeight: 600, padding: '3px 8px' }}>
                               Account #{idx + 1}
                             </span>
+                            <span className="chip cyan" style={{ fontSize: '11px', fontWeight: 700, padding: '3px 8px' }}>
+                              {acc.url ? acc.url.replace("https://", "").split(".")[0].replace("kickbacks-backend-", "").toUpperCase() : "NODE"}
+                            </span>
                             <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{accountName}</span>
                             {isSimulated ? (
                               <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
@@ -1659,7 +1662,9 @@ export default function App() {
                         <table className="client-table">
                           <thead>
                             <tr>
-                              <th>Client</th>
+                              <th>Node</th>
+                              <th>Virtual Bot</th>
+                              <th>Client / Device ID</th>
                               <th>Ad Render</th>
                               <th>Ticks</th>
                               <th>Bills</th>
@@ -1689,7 +1694,17 @@ export default function App() {
                               return (
                                 <tr key={cIdx}>
                                   <td>
+                                    <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 7px', fontWeight: 700 }}>
+                                      {client.instanceName ? client.instanceName.replace("_", " ").toUpperCase() : "NODE"}
+                                    </span>
+                                  </td>
+                                  <td>
                                     <span className="cell-code" style={{ fontWeight: 600 }}>{client.name}</span>
+                                  </td>
+                                  <td>
+                                    <span style={{ fontFamily: 'var(--font-code)', fontSize: '11px', color: 'var(--steel)' }}>
+                                      {client.clientId ? `${client.clientId.slice(0, 12)}...` : "N/A"}
+                                    </span>
                                   </td>
                                   <td>{client.adTitle || <span className="muted-text">None</span>}</td>
                                   <td className="cell-number">{client.ticks || 0}</td>
