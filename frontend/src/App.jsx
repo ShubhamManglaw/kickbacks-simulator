@@ -38,21 +38,11 @@ const resolveDefaultBackend = () => {
   if (isLanHostname(hostname)) {
     return `${protocol}//${hostname}:3001`;
   }
-  return "https://kickbacks-backend-node-1.onrender.com";
+  if (hostname.includes('onrender.com')) return origin;
+  return 'https://kickbacks-backend-node-1.onrender.com';
 };
 
-const DEFAULT_INSTANCES = [
-  "https://kickbacks-backend-node-1.onrender.com",
-  "https://kickbacks-backend-node-2.onrender.com",
-  "https://kickbacks-backend-node-3.onrender.com",
-  "https://kickbacks-backend-node-4.onrender.com",
-  "https://kickbacks-backend-node-5.onrender.com",
-  "https://kickbacks-backend-node-6.onrender.com",
-  "https://kickbacks-backend-node-7.onrender.com",
-  "https://kickbacks-backend-node-8.onrender.com",
-  "https://kickbacks-backend-node-9.onrender.com",
-  "https://kickbacks-backend-node-10.onrender.com"
-];
+const DEFAULT_INSTANCES = [resolveDefaultBackend()];
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
@@ -77,15 +67,16 @@ export default function App() {
   const [instances, setInstances] = useState(() => {
     const isLocal = typeof window !== 'undefined' && isLanHostname(window.location.hostname);
     const resolvedDefault = resolveDefaultBackend();
-    const defaultList = isLocal ? [resolvedDefault] : DEFAULT_INSTANCES;
+    const defaultList = [resolvedDefault];
     const saved = localStorage.getItem('dashboard_instances');
     let list = saved ? JSON.parse(saved) : defaultList;
     list = list.filter(item => !item.includes('utksh.in') && !item.includes('utksh.bar') && !item.includes('kickbacks-backend-nbah.onrender.com') && !item.includes('kickbacks-backend-6big.onrender.com') && !item.match(/:(300[2-9]|3010)/));
     if (!isLocal) {
+      // In production (e.g. Vercel), strip plain localhost/http URLs to avoid mixed content errors
       list = list.filter(item => !item.includes('localhost') && !item.includes('127.0.0.1'));
-      DEFAULT_INSTANCES.forEach(u => {
-        if (!list.includes(u)) list.push(u);
-      });
+    }
+    if (resolvedDefault && !list.includes(resolvedDefault)) {
+      list.unshift(resolvedDefault);
     }
     if (!list || list.length === 0) {
       list = [...defaultList];
@@ -99,13 +90,11 @@ export default function App() {
   const [loading, setLoading] = useState(() => Boolean(localStorage.getItem('dashboard_password')));
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [selectedAccount, setSelectedAccount] = useState('all');
-  const [selectedNodeFilter, setSelectedNodeFilter] = useState('all');
 
   // Derive list of individual accounts across backend instances
   const displayedAccounts = useMemo(() => {
     const list = [];
     Object.keys(statuses).forEach(url => {
-      if (selectedNodeFilter !== 'all' && url !== selectedNodeFilter) return;
       const s = statuses[url];
       if (!s || !s.online) return;
 
@@ -144,7 +133,7 @@ export default function App() {
       });
     });
     return list;
-  }, [statuses, selectedNodeFilter]);
+  }, [statuses]);
 
   // Account Connect Modal & Auth States
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -201,7 +190,6 @@ export default function App() {
   }, []);
 
   const [selectedLogInstance, setSelectedLogInstance] = useState(instances[0] || '');
-  const [consoleLogs, setConsoleLogs] = useState([]);
   const [configJson, setConfigJson] = useState('[]');
   const [configSaving, setConfigSaving] = useState(false);
 
@@ -296,24 +284,8 @@ export default function App() {
     };
 
     fetchAllStatuses();
-    let interval = setInterval(fetchAllStatuses, 4500);
-
-    const handleVisibilityChange = () => {
-      clearInterval(interval);
-      if (document.hidden) {
-        interval = setInterval(fetchAllStatuses, 30000);
-      } else {
-        fetchAllStatuses();
-        interval = setInterval(fetchAllStatuses, 4500);
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
+    const interval = setInterval(fetchAllStatuses, 2000);
+    return () => clearInterval(interval);
   }, [isAuthorized, instances, password, refreshTrigger]);
 
   // Save status metrics to localStorage when statuses change
@@ -364,31 +336,6 @@ export default function App() {
     localStorage.setItem('kickbacks_cached_metrics', JSON.stringify(newMetrics));
   }, [statuses]);
 
-  // On-demand log fetcher: ONLY poll logs when user is actively looking at Console tab
-  useEffect(() => {
-    if (activeTab !== 'logs' || !selectedLogInstance) return;
-
-    let isMounted = true;
-    const fetchLogs = async () => {
-      try {
-        const res = await fetch(`${selectedLogInstance}/api/logs?limit=40`, {
-          headers: { 'Authorization': `Bearer ${password}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (isMounted) setConsoleLogs(data.logs || []);
-        }
-      } catch (_) {}
-    };
-
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 3500);
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, [activeTab, selectedLogInstance, password]);
-
   // Fetch histories when Analytics tab is selected
   useEffect(() => {
     if (!isAuthorized || activeTab !== 'analytics') return;
@@ -427,20 +374,8 @@ export default function App() {
       return undefined;
     }
 
-    const timer = window.setTimeout(async () => {
-      try {
-        const res = await fetch(`${onlineInstance}/api/config`, {
-          headers: { 'Authorization': `Bearer ${password}` }
-        });
-        if (res.ok) {
-          const cfg = await res.json();
-          setConfigJson(JSON.stringify(cfg, null, 2));
-        } else {
-          setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
-        }
-      } catch (_) {
-        setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
-      }
+    const timer = window.setTimeout(() => {
+      setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
     }, 0);
 
     return () => window.clearTimeout(timer);
@@ -1295,8 +1230,8 @@ export default function App() {
                   <CircleDollarSign size={20} />
                 </div>
                 <div>
-                  <p className="metric-label">Session Gain</p>
-                  <p className="metric-value">+${sessionEarnedToday.toFixed(4)}</p>
+                  <p className="metric-label">Lifetime Balance</p>
+                  <p className="metric-value">${realLifetimeUsd.toFixed(6)}</p>
                 </div>
               </div>
 
@@ -1491,31 +1426,6 @@ export default function App() {
               </div>
             ) : (
               <>
-                {/* Node Cluster Filter Bar */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', alignItems: 'center' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--steel)', marginRight: '4px' }}>Cluster Node:</span>
-                  <button
-                    className={`filter-tab-pill ${selectedNodeFilter === 'all' ? 'active' : ''}`}
-                    onClick={() => { setSelectedNodeFilter('all'); setSelectedAccount('all'); }}
-                  >
-                    All Nodes ({instances.length})
-                  </button>
-                  {instances.map((url, idx) => {
-                    const s = statuses[url];
-                    const name = s?.instanceName ? s.instanceName.replace('_', ' ').toUpperCase() : `NODE ${idx + 1}`;
-                    const botCount = s?.clients?.length || 0;
-                    return (
-                      <button
-                        key={url}
-                        className={`filter-tab-pill ${selectedNodeFilter === url ? 'active' : ''}`}
-                        onClick={() => { setSelectedNodeFilter(url); setSelectedAccount('all'); }}
-                      >
-                        {name} ({botCount})
-                      </button>
-                    );
-                  })}
-                </div>
-
                 {/* Account Selector Filter Bar */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
                   <button
@@ -1581,9 +1491,6 @@ export default function App() {
                             <span className="chip purple" style={{ fontSize: '11px', fontWeight: 600, padding: '3px 8px' }}>
                               Account #{idx + 1}
                             </span>
-                            <span className="chip cyan" style={{ fontSize: '11px', fontWeight: 700, padding: '3px 8px' }}>
-                              {acc.url ? acc.url.replace("https://", "").split(".")[0].replace("kickbacks-backend-", "").toUpperCase() : "NODE"}
-                            </span>
                             <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{accountName}</span>
                             {isSimulated ? (
                               <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
@@ -1613,7 +1520,7 @@ export default function App() {
                               <span style={{ color: 'var(--steel)' }}>Active Bots: <strong style={{ color: 'var(--ink)' }}>{activeClientsCount}/{acc.scale || clients.length || 10}</strong></span>
                               <span style={{ color: 'var(--steel)' }}>Earned: <strong style={{ color: 'var(--brand-green-dark)' }}>${acctClientRev.toFixed(6)}</strong></span>
                               <span style={{ color: 'var(--steel)' }}>Today: <strong style={{ color: 'var(--ink)' }}>${todayUsd.toFixed(4)}</strong></span>
-                              <span style={{ color: 'var(--steel)' }}>Session: <strong style={{ color: 'var(--brand-green-dark)', fontFamily: 'var(--font-code)' }}>+${(profile?.sessionEarned || 0).toFixed(4)}</strong></span>
+                              <span style={{ color: 'var(--steel)' }}>Lifetime: <strong style={{ color: 'var(--ink)', fontFamily: 'var(--font-code)' }}>${lifetimeUsd.toFixed(2)}</strong></span>
                             </div>
 
                             <div style={{ display: 'flex', gap: '8px' }}>
@@ -1726,9 +1633,7 @@ export default function App() {
                         <table className="client-table">
                           <thead>
                             <tr>
-                              <th>Node</th>
-                              <th>Virtual Bot</th>
-                              <th>Client / Device ID</th>
+                              <th>Client</th>
                               <th>Ad Render</th>
                               <th>Ticks</th>
                               <th>Bills</th>
@@ -1758,17 +1663,7 @@ export default function App() {
                               return (
                                 <tr key={cIdx}>
                                   <td>
-                                    <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 7px', fontWeight: 700 }}>
-                                      {client.instanceName ? client.instanceName.replace("_", " ").toUpperCase() : "NODE"}
-                                    </span>
-                                  </td>
-                                  <td>
                                     <span className="cell-code" style={{ fontWeight: 600 }}>{client.name}</span>
-                                  </td>
-                                  <td>
-                                    <span style={{ fontFamily: 'var(--font-code)', fontSize: '11px', color: 'var(--steel)' }}>
-                                      {client.clientId ? `${client.clientId.slice(0, 12)}...` : "N/A"}
-                                    </span>
                                   </td>
                                   <td>{client.adTitle || <span className="muted-text">None</span>}</td>
                                   <td className="cell-number">{client.ticks || 0}</td>
@@ -1826,8 +1721,8 @@ export default function App() {
                   <CircleDollarSign size={20} />
                 </div>
                 <div>
-                  <p className="metric-label">Verified Session Gain</p>
-                  <p className="metric-value">+${sessionEarnedToday.toFixed(4)}</p>
+                  <p className="metric-label">Total Lifetime Balance</p>
+                  <p className="metric-value">${realLifetimeUsd.toFixed(6)}</p>
                 </div>
               </div>
 
@@ -1890,7 +1785,7 @@ export default function App() {
                       <th>Primary Ad</th>
                       <th>Ticks</th>
                       <th>Today's Real ($)</th>
-                      <th>Active Bots</th>
+                      <th>Lifetime Balance ($)</th>
                       <th>Account Status</th>
                     </tr>
                   </thead>
@@ -1925,8 +1820,8 @@ export default function App() {
                           <td className="cell-money" style={{ fontWeight: 600, color: 'var(--brand-green-dark)' }}>
                             ${realToday.toFixed(6)}
                           </td>
-                          <td className="cell-number" style={{ fontWeight: 700, color: 'var(--ink)' }}>
-                            {clients.length} bots
+                          <td className="cell-money" style={{ fontWeight: 700, color: 'var(--ink)' }}>
+                            ${realLifetime.toFixed(6)}
                           </td>
                           <td>
                             <span className={`chip ${isBlocked ? 'red' : 'green'}`} style={{ fontSize: '11px', padding: '2px 8px' }}>
@@ -2347,10 +2242,10 @@ export default function App() {
             </div>
 
             <div className="console-content">
-              {consoleLogs.length === 0 ? (
+              {statuses[selectedLogInstance]?.logs?.length === 0 ? (
                 <div className="console-row" style={{ color: 'var(--stone)' }}>No logs recorded for this instance yet.</div>
               ) : (
-                consoleLogs.map((log, idx) => (
+                (statuses[selectedLogInstance]?.logs || []).map((log, idx) => (
                   <div key={idx} className="console-row">
                     <span className="console-time">[{log.time}]</span>
                     <span className={getLogClass(log.message)}>{log.message}</span>

@@ -1397,7 +1397,7 @@ async function start() {
     };
 
     pollEarnings();
-    const earningsInterval = setInterval(pollEarnings, 60000); // 60s poll cuts 75% Kickbacks API bandwidth
+    const earningsInterval = setInterval(pollEarnings, 15000);
 
     let startIdx = 0;
     let endIdx = scaleFactor;
@@ -1409,12 +1409,7 @@ async function start() {
       if (instanceMatch) {
         const instNum = parseInt(instanceMatch[1], 10);
 
-        const botsPerAccount = parseInt(process.env.BOTS_PER_ACCOUNT_PER_INSTANCE || "0", 10);
-
-        if (botsPerAccount > 0) {
-          startIdx = (instNum - 1) * botsPerAccount;
-          endIdx = startIdx + botsPerAccount;
-        } else if (clientsPerInstance > 0) {
+        if (clientsPerInstance > 0) {
           const numProfiles = targetProfiles.length;
           const perProfileClients = Math.max(1, Math.floor(clientsPerInstance / numProfiles));
           const profileIndexInActive = targetProfiles.findIndex(item => item.p.name === p.name);
@@ -1437,7 +1432,7 @@ async function start() {
     console.log(`[Profile:${p.name}] Spawning ${endIdx - startIdx} virtual clients (indices ${startIdx} to ${endIdx - 1})...`);
 
     for (let c = startIdx; c < endIdx; c++) {
-      const virtualClientId = crypto.createHash("sha256").update(`${p.clientId || p.name}_v${c + 1}`).digest("hex").slice(0, 24);
+      const virtualClientId = p.clientId || crypto.randomBytes(12).toString("hex");
 
       const virtualName = `${p.name}_v${c + 1}`;
       // Stagger clients by 3.5s so multiple clients don't hit the exact same tick second

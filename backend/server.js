@@ -481,23 +481,10 @@ app.post('/api/login', (req, res) => {
   return res.status(401).json({ error: 'Invalid password' });
 });
 
-app.get('/api/logs', checkAuth, (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
-  res.json({ logs: logs.slice(-limit) });
-});
-
 app.get('/api/status', checkAuth, async (req, res) => {
   let configProfiles = [];
   try {
-    const rawConfig = await loadConfig();
-    // Strip giant tokens from status poll to save 85% bandwidth
-    configProfiles = (rawConfig || []).map(p => ({
-      name: p.name,
-      scale: p.scale || 10,
-      minPromptWait: p.minPromptWait,
-      maxPromptWait: p.maxPromptWait,
-      sessionDuration: p.sessionDuration
-    }));
+    configProfiles = await loadConfig();
   } catch (err) {
     // Ignore error
   }
@@ -509,22 +496,33 @@ app.get('/api/status', checkAuth, async (req, res) => {
     console.error("SYSTEM: Failed to load client stats from DB:", err.message);
   }
 
+  // Aggregate totals
   const clientRevenueTotal = dbClients.reduce((sum, c) => sum + (parseFloat(c.revenue_usd) || 0), 0);
   const totalBillingCount = dbClients.reduce((sum, c) => sum + (parseInt(c.billing_count) || 0), 0);
 
+  // Real earnings from Kickbacks /v1/earnings API (the OFFICIAL numbers)
   let realTodayUsd = 0;
-  let sessionEarnedToday = 0;
+  let realLifetimeUsd = 0;
+  let realTodayMicros = 0;
+  let realLifetimeMicros = 0;
 
-  // Strip lifetime balances, micros, DB timestamps, initial balances
-  const slimProfiles = Object.values(profiles).map(p => {
-    const today = p.currentTodayUsd || 0;
-    const session = p.earnedTodayRun || 0;
-    realTodayUsd += today;
-    sessionEarnedToday += session;
+  // Session-earned delta (real earnings gained since this run started)
+  let sessionEarnedToday = 0;
+  let sessionEarnedLifetime = 0;
+
+  const enhancedProfiles = Object.values(profiles).map(p => {
+    realTodayUsd += (p.currentTodayUsd || 0);
+    realLifetimeUsd += (p.currentLifetimeUsd || 0);
+    realTodayMicros += (p.currentTodayMicros || 0);
+    realLifetimeMicros += (p.currentLifetimeMicros || 0);
+    sessionEarnedToday += (p.earnedTodayRun || 0);
+    sessionEarnedLifetime += (p.earnedLifetimeRun || 0);
     return {
-      name: p.name,
-      todayUsd: today,
-      sessionEarned: session
+      ...p,
+      // Keep real values, don't inflate with fake estimates
+      earnedTodayRun: p.earnedTodayRun || 0,
+      currentTodayUsd: p.currentTodayUsd || 0,
+      currentLifetimeUsd: p.currentLifetimeUsd || 0
     };
   });
 
@@ -532,24 +530,43 @@ app.get('/api/status', checkAuth, async (req, res) => {
     running: simulatorProcess !== null,
     instanceName: process.env.INSTANCE_NAME || 'default',
     configProfiles,
-    profiles: slimProfiles,
+    profiles: enhancedProfiles,
+    // Real earnings from Kickbacks official API
+    realEarnings: {
+      todayUsd: realTodayUsd,
+      lifetimeUsd: realLifetimeUsd,
+      todayMicros: realTodayMicros,
+      lifetimeMicros: realLifetimeMicros,
+      sessionEarnedToday,
+      sessionEarnedLifetime
+    },
+    // Local estimated revenue (billing_count * $0.0001 — NOT real money)
+    estimatedRevenue: {
+      total: clientRevenueTotal,
+      totalBillingCount
+    },
     clients: dbClients.map(c => ({
       name: c.client_name,
       instanceName: c.instance_name,
-      clientId: c.client_id ? c.client_id.slice(0, 12) : '',
-      adTitle: c.ad_title || '',
-      ticks: c.ticks || 0,
-      billing_count: c.billing_count || 0,
-      revenue_usd: c.revenue_usd || 0,
-      lastStatus: c.last_status || '',
-      lastTickTime: c.last_tick_time || ''
+      clientId: c.client_id,
+      adTitle: c.ad_title,
+      adId: c.ad_id,
+      ticks: c.ticks,
+      billing_count: c.billing_count,
+      revenue_usd: c.revenue_usd,
+      lastStatus: c.last_status,
+      lastTickTime: c.last_tick_time,
+      updatedAt: c.updated_at
     })),
     totals: {
-      todayUsd: realTodayUsd.toFixed(4),
-      sessionEarned: sessionEarnedToday.toFixed(4),
-      estimatedRevenue: clientRevenueTotal.toFixed(4),
-      bills: totalBillingCount
-    }
+      realTodayUsd: realTodayUsd.toFixed(6),
+      realLifetimeUsd: realLifetimeUsd.toFixed(6),
+      sessionEarnedToday: sessionEarnedToday.toFixed(6),
+      sessionEarnedLifetime: sessionEarnedLifetime.toFixed(6),
+      estimatedRevenue: clientRevenueTotal.toFixed(6),
+      totalBillingCount
+    },
+    logs
   });
 });
 
@@ -968,49 +985,8 @@ if (hasFrontendDist) {
   });
 }
 
-
-// --- CLUSTER RING KEEP-ALIVE PING ENGINE ---
-// Node 1 -> Node 2 -> Node 3 ... -> Node 10 -> Node 1
-// Keeps all 10 Render services awake 24/7 with zero external tools needed!
-function startClusterRingKeepAlive() {
-  const instanceName = process.env.INSTANCE_NAME || "instance_1";
-  const instanceMatch = instanceName.match(/inst(?:ance)?_(\d+)/i);
-  if (!instanceMatch) return;
-
-  const currentNum = parseInt(instanceMatch[1], 10);
-  const total = parseInt(process.env.TOTAL_INSTANCES || "10", 10);
-  const nextNum = (currentNum % total) + 1;
-  const nextNodeUrl = `https://kickbacks-backend-node-${nextNum}.onrender.com/api/health`;
-
-  console.log(`[Cluster Ring] 🔄 Ring keep-alive initialized: Node ${currentNum} -> Node ${nextNum} (${nextNodeUrl})`);
-
-  // Ping every 7 minutes (420,000 ms) - safely under Render 15-minute idle sleep timer
-  const PING_INTERVAL = 7 * 60 * 1000;
-
-  // Stagger initial ping (Node 1 after 20s, Node 2 after 40s...)
-  setTimeout(pingNext, Math.max(10000, currentNum * 20000));
-  setInterval(pingNext, PING_INTERVAL);
-
-  async function pingNext() {
-    try {
-      const res = await fetch(nextNodeUrl, {
-        headers: { "User-Agent": `ClusterMesh/Node-${currentNum}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        console.log(`[Cluster Ring] 💓 Ping to Node ${nextNum} succeeded (${data.instanceName || "online"}).`);
-      } else {
-        console.warn(`[Cluster Ring] ⚠️ Ping to Node ${nextNum} returned HTTP ${res.status}.`);
-      }
-    } catch (err) {
-      console.warn(`[Cluster Ring] ⚠️ Ping to Node ${nextNum} blip: ${err.message}`);
-    }
-  }
-}
-
 app.listen(PORT, async () => {
   console.log(`\n🚀 Kickbacks Simulator Backend is live at http://localhost:${PORT}\n`);
-  startClusterRingKeepAlive();
 
   // Auto-start simulator on boot if config has accounts
   try {
