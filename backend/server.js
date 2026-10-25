@@ -311,16 +311,24 @@ setInterval(() => {
 async function checkDailyPayoutCap() {
   if (isDailyCapped || !simulatorProcess) return;
 
+  let configuredCount = 7;
+  try {
+    const rawConfig = await loadConfig();
+    if (Array.isArray(rawConfig) && rawConfig.length > 0) {
+      configuredCount = rawConfig.length;
+    }
+  } catch (_) {}
+
   const profList = Object.values(profiles);
-  if (profList.length === 0) return;
+  if (profList.length < configuredCount) return;
 
   // Count how many accounts have reached the cap (>= $1.12)
   const cappedCount = profList.filter(p => (p.currentTodayUsd || 0) >= DAILY_CAP_PER_ACCOUNT_USD).length;
   const totalToday = profList.reduce((sum, p) => sum + (p.currentTodayUsd || 0), 0);
-  const targetThresholdTotal = profList.length * DAILY_CAP_PER_ACCOUNT_USD;
+  const targetThresholdTotal = configuredCount * DAILY_CAP_PER_ACCOUNT_USD;
 
-  // Trigger cap if all accounts are >= 1.12 OR total fleet today is >= profList.length * 1.12
-  if (cappedCount >= profList.length || totalToday >= targetThresholdTotal) {
+  // Trigger cap if all accounts are >= 1.12 OR total fleet today is >= configuredCount * 1.12
+  if (cappedCount >= configuredCount || totalToday >= targetThresholdTotal) {
     isDailyCapped = true;
     cappedAtTimestamp = Date.now();
 
