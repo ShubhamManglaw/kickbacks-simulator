@@ -38,10 +38,16 @@ const resolveDefaultBackend = () => {
   if (isLanHostname(hostname)) {
     return `${protocol}//${hostname}:3001`;
   }
-  return 'https://kickbacks-backend-slf4.onrender.com';
+  return "https://kickbacks-backend-node-1.onrender.com";
 };
 
-const DEFAULT_INSTANCES = [resolveDefaultBackend()];
+const DEFAULT_INSTANCES = [
+  "https://kickbacks-backend-node-1.onrender.com",
+  "https://kickbacks-backend-node-2.onrender.com",
+  "https://kickbacks-backend-node-3.onrender.com",
+  "https://kickbacks-backend-node-4.onrender.com",
+  "https://kickbacks-backend-node-5.onrender.com"
+];
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
