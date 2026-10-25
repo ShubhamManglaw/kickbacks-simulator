@@ -956,6 +956,7 @@ export default function App() {
   }
 
   // Fleet Efficiency
+  const isDailyCapped = Object.values(statuses).some(s => s && (s.isDailyCapped || s.dailyCap?.capped));
   const activeClients = allClientsList.filter(c => c.lastStatus !== 'Stopped' && c.lastStatus !== 'inactive').length;
   const totalTicks = allClientsList.reduce((sum, c) => sum + (c.ticks || 0), 0);
   const totalBills = allClientsList.reduce((sum, c) => sum + (c.billing_count || 0), 0);
@@ -1148,6 +1149,12 @@ export default function App() {
               <Activity size={13} />
               <span>{runningBackends} Running</span>
             </div>
+            {isDailyCapped && (
+              <div className="badge-soft-pill" style={{ backgroundColor: 'rgba(124, 58, 237, 0.15)', color: '#a855f7', border: '1px solid rgba(168, 85, 247, 0.35)', fontWeight: 700 }} title="Daily payout cap reached (~$1.14/account). Idle to save 100% Render bandwidth. Auto-resumes at 06:00 AM IST.">
+                <span className="status-pulse-dot" style={{ backgroundColor: '#a855f7' }}></span>
+                <span>🎯 Cap Reached · Resumes at 06:00 AM IST</span>
+              </div>
+            )}
 
             {activeTab === 'dashboard' && (
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -1255,6 +1262,44 @@ export default function App() {
                 </div>
               </div>
             </section>
+
+            {isDailyCapped && (
+              <div style={{
+                margin: '14px 0',
+                padding: '14px 18px',
+                borderRadius: 'var(--rounded-md)',
+                backgroundColor: 'rgba(124, 58, 237, 0.08)',
+                border: '1px solid rgba(124, 58, 237, 0.25)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(124, 58, 237, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-purple)' }}>
+                    <Target size={18} />
+                  </div>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--ink)' }}>
+                      Daily Payout Cap Reached (~$1.14 / account)
+                    </h4>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: 'var(--steel)' }}>
+                      Fleet paused to save 100% Render bandwidth on non-paying house ads. Scheduled to auto-resume at <strong>06:00 AM IST</strong>.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="btn-outline-pill"
+                  style={{ fontSize: '12px', padding: '6px 14px' }}
+                  onClick={startAllSimulators}
+                  title="Override daily cap and run now"
+                >
+                  <Play size={12} fill="currentColor" />
+                  <span>Resume Now</span>
+                </button>
+              </div>
+            )}
 
             {/* Simulation & Bot Fleet Concurrency Controller */}
             <div className="sim-control-panel">

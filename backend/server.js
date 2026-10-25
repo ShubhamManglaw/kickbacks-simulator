@@ -243,7 +243,107 @@ function appendLog(message) {
   if (logs.length > 500) logs.shift();
 }
 
+// --- AUTO-SCHEDULER & DAILY PAYOUT CAP CONTROLLER ---
+const DAILY_CAP_PER_ACCOUNT_USD = process.env.DAILY_CAP_PER_ACCOUNT ? parseFloat(process.env.DAILY_CAP_PER_ACCOUNT) : 1.12;
+let isDailyCapped = false;
+let cappedAtTimestamp = 0;
+let autoResumeTimer = null;
+
+function getMsUntilNext6AM() {
+  const now = new Date();
+  // IST is UTC+5:30. 6:00 AM IST is 00:30 UTC.
+  const nextReset = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0, 30, 0, 0
+  ));
+  if (now.getTime() >= nextReset.getTime()) {
+    nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+  }
+  return nextReset.getTime() - now.getTime();
+}
+
+function scheduleAutoResumeAt6AM() {
+  if (autoResumeTimer) clearTimeout(autoResumeTimer);
+
+  const msUntilResume = getMsUntilNext6AM();
+  const hours = (msUntilResume / 3600000).toFixed(2);
+  const targetDate = new Date(Date.now() + msUntilResume);
+  const targetTimeStr = targetDate.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+
+  appendLog(`[Auto-Scheduler] ⏰ Scheduled auto-resume for 06:00 AM IST (in ${hours} hrs at ${targetTimeStr} IST).`);
+  console.log(`[Auto-Scheduler] ⏰ Fleet will automatically resume at 06:00 AM IST (in ${hours} hours / ${Math.round(msUntilResume / 1000)}s)`);
+
+  autoResumeTimer = setTimeout(() => {
+    appendLog(`[Auto-Scheduler] 🌅 06:00 AM IST reached! UTC day has reset. Auto-starting fleet...`);
+    console.log(`[Auto-Scheduler] 🌅 06:00 AM IST reached! UTC day has reset. Auto-starting fleet...`);
+    isDailyCapped = false;
+    for (const key of Object.keys(profiles)) {
+      profiles[key].initialTodayMicros = 0;
+      profiles[key].earnedTodayRun = 0;
+    }
+    startSimulator();
+  }, msUntilResume);
+}
+
+// Backup check every 60 seconds
+setInterval(() => {
+  if (isDailyCapped && !simulatorProcess) {
+    const now = new Date();
+    // 6:00 AM IST = 00:30 UTC
+    const istHours = (now.getUTCHours() + 5 + Math.floor((now.getUTCMinutes() + 30) / 60)) % 24;
+    const istMinutes = (now.getUTCMinutes() + 30) % 60;
+    
+    // If between 6:00 AM and 6:05 AM IST, and has been capped for at least 20 minutes
+    if (istHours === 6 && istMinutes <= 5 && (Date.now() - cappedAtTimestamp > 20 * 60 * 1000)) {
+      appendLog(`[Auto-Scheduler] 🌅 06:00 AM IST daily reset trigger! Resuming simulator fleet...`);
+      isDailyCapped = false;
+      for (const key of Object.keys(profiles)) {
+        profiles[key].initialTodayMicros = 0;
+        profiles[key].earnedTodayRun = 0;
+      }
+      startSimulator();
+    }
+  }
+}, 60 * 1000);
+
+async function checkDailyPayoutCap() {
+  if (isDailyCapped || !simulatorProcess) return;
+
+  const profList = Object.values(profiles);
+  if (profList.length === 0) return;
+
+  // Count how many accounts have reached the cap (>= $1.12)
+  const cappedCount = profList.filter(p => (p.currentTodayUsd || 0) >= DAILY_CAP_PER_ACCOUNT_USD).length;
+  const totalToday = profList.reduce((sum, p) => sum + (p.currentTodayUsd || 0), 0);
+  const targetThresholdTotal = profList.length * DAILY_CAP_PER_ACCOUNT_USD;
+
+  // Trigger cap if all accounts are >= 1.12 OR total fleet today is >= profList.length * 1.12
+  if (cappedCount >= profList.length || totalToday >= targetThresholdTotal) {
+    isDailyCapped = true;
+    cappedAtTimestamp = Date.now();
+
+    const banner = `\n========================================================================\n🎯 DAILY PAYOUT CAP REACHED: All ${profList.length} accounts have reached ~$1.14 today (${totalToday.toFixed(2)} total).\n🛑 Auto-stopping simulator to save 100% bandwidth (avoiding $0 house ads).\n⏰ Fleet will automatically wake up and resume at 06:00 AM IST.\n========================================================================`;
+    console.log(banner);
+    appendLog(banner);
+
+    stopSimulator();
+
+    // Update DB status to let UI know
+    const { runPgQuery } = require('./db');
+    runPgQuery(
+      "UPDATE client_stats SET last_status = 'Capped (Auto-resumes at 06:00 AM)', updated_at = NOW() WHERE instance_name = $1;",
+      [process.env.INSTANCE_NAME || 'default']
+    ).catch(() => {});
+
+    scheduleAutoResumeAt6AM();
+  }
+}
+
 function startSimulator() {
+  isDailyCapped = false;
+  if (autoResumeTimer) { clearTimeout(autoResumeTimer); autoResumeTimer = null; }
   if (simulatorProcess) return false;
 
   clearLocalClientStats(process.env.INSTANCE_NAME || 'default');
@@ -311,6 +411,8 @@ function startSimulator() {
           console.error("SYSTEM: Error logging revenue history snapshot:", err.message);
         });
       }
+
+      checkDailyPayoutCap();
     } else if (msg.type === 'client_ad') {
       const { clientName, clientId, adId, adTitle } = msg;
       updateClientAd(clientName, process.env.INSTANCE_NAME || 'default', clientId, adId, adTitle, 'Success').catch(err => {
@@ -373,9 +475,10 @@ function startSimulator() {
     
     // Reset client statuses in DB
     const { runPgQuery } = require('./db');
+    const exitStatus = isDailyCapped ? 'Capped (Auto-resumes at 06:00 AM)' : 'Stopped';
     runPgQuery(
-      "UPDATE client_stats SET last_status = 'Stopped', updated_at = NOW() WHERE instance_name = $1;",
-      [process.env.INSTANCE_NAME || 'default']
+      "UPDATE client_stats SET last_status = $1, updated_at = NOW() WHERE instance_name = $2;",
+      [exitStatus, process.env.INSTANCE_NAME || 'default']
     ).catch(err => {
       console.error("SYSTEM: Error updating exit statuses in DB:", err.message);
     });
@@ -565,6 +668,13 @@ app.get('/api/status', checkAuth, async (req, res) => {
       sessionEarnedLifetime: sessionEarnedLifetime.toFixed(6),
       estimatedRevenue: clientRevenueTotal.toFixed(6),
       totalBillingCount
+    },
+    isDailyCapped,
+    dailyCap: {
+      capped: isDailyCapped,
+      thresholdUsd: DAILY_CAP_PER_ACCOUNT_USD,
+      autoResumeAt: '06:00 AM IST',
+      msUntilResume: isDailyCapped ? getMsUntilNext6AM() : 0
     },
     logs
   });
