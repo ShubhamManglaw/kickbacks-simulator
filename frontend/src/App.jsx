@@ -201,6 +201,7 @@ export default function App() {
   }, []);
 
   const [selectedLogInstance, setSelectedLogInstance] = useState(instances[0] || '');
+  const [consoleLogs, setConsoleLogs] = useState([]);
   const [configJson, setConfigJson] = useState('[]');
   const [configSaving, setConfigSaving] = useState(false);
 
@@ -363,6 +364,31 @@ export default function App() {
     localStorage.setItem('kickbacks_cached_metrics', JSON.stringify(newMetrics));
   }, [statuses]);
 
+  // On-demand log fetcher: ONLY poll logs when user is actively looking at Console tab
+  useEffect(() => {
+    if (activeTab !== 'logs' || !selectedLogInstance) return;
+
+    let isMounted = true;
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch(`${selectedLogInstance}/api/logs?limit=40`, {
+          headers: { 'Authorization': `Bearer ${password}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted) setConsoleLogs(data.logs || []);
+        }
+      } catch (_) {}
+    };
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 3500);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [activeTab, selectedLogInstance, password]);
+
   // Fetch histories when Analytics tab is selected
   useEffect(() => {
     if (!isAuthorized || activeTab !== 'analytics') return;
@@ -401,8 +427,20 @@ export default function App() {
       return undefined;
     }
 
-    const timer = window.setTimeout(() => {
-      setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`${onlineInstance}/api/config`, {
+          headers: { 'Authorization': `Bearer ${password}` }
+        });
+        if (res.ok) {
+          const cfg = await res.json();
+          setConfigJson(JSON.stringify(cfg, null, 2));
+        } else {
+          setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
+        }
+      } catch (_) {
+        setConfigJson(JSON.stringify(statuses[onlineInstance].configProfiles, null, 2));
+      }
     }, 0);
 
     return () => window.clearTimeout(timer);
@@ -1257,8 +1295,8 @@ export default function App() {
                   <CircleDollarSign size={20} />
                 </div>
                 <div>
-                  <p className="metric-label">Lifetime Balance</p>
-                  <p className="metric-value">${realLifetimeUsd.toFixed(6)}</p>
+                  <p className="metric-label">Session Gain</p>
+                  <p className="metric-value">+${sessionEarnedToday.toFixed(4)}</p>
                 </div>
               </div>
 
@@ -1575,7 +1613,7 @@ export default function App() {
                               <span style={{ color: 'var(--steel)' }}>Active Bots: <strong style={{ color: 'var(--ink)' }}>{activeClientsCount}/{acc.scale || clients.length || 10}</strong></span>
                               <span style={{ color: 'var(--steel)' }}>Earned: <strong style={{ color: 'var(--brand-green-dark)' }}>${acctClientRev.toFixed(6)}</strong></span>
                               <span style={{ color: 'var(--steel)' }}>Today: <strong style={{ color: 'var(--ink)' }}>${todayUsd.toFixed(4)}</strong></span>
-                              <span style={{ color: 'var(--steel)' }}>Lifetime: <strong style={{ color: 'var(--ink)', fontFamily: 'var(--font-code)' }}>${lifetimeUsd.toFixed(2)}</strong></span>
+                              <span style={{ color: 'var(--steel)' }}>Session: <strong style={{ color: 'var(--brand-green-dark)', fontFamily: 'var(--font-code)' }}>+${(profile?.sessionEarned || 0).toFixed(4)}</strong></span>
                             </div>
 
                             <div style={{ display: 'flex', gap: '8px' }}>
@@ -1788,8 +1826,8 @@ export default function App() {
                   <CircleDollarSign size={20} />
                 </div>
                 <div>
-                  <p className="metric-label">Total Lifetime Balance</p>
-                  <p className="metric-value">${realLifetimeUsd.toFixed(6)}</p>
+                  <p className="metric-label">Verified Session Gain</p>
+                  <p className="metric-value">+${sessionEarnedToday.toFixed(4)}</p>
                 </div>
               </div>
 
@@ -1852,7 +1890,7 @@ export default function App() {
                       <th>Primary Ad</th>
                       <th>Ticks</th>
                       <th>Today's Real ($)</th>
-                      <th>Lifetime Balance ($)</th>
+                      <th>Active Bots</th>
                       <th>Account Status</th>
                     </tr>
                   </thead>
@@ -1887,8 +1925,8 @@ export default function App() {
                           <td className="cell-money" style={{ fontWeight: 600, color: 'var(--brand-green-dark)' }}>
                             ${realToday.toFixed(6)}
                           </td>
-                          <td className="cell-money" style={{ fontWeight: 700, color: 'var(--ink)' }}>
-                            ${realLifetime.toFixed(6)}
+                          <td className="cell-number" style={{ fontWeight: 700, color: 'var(--ink)' }}>
+                            {clients.length} bots
                           </td>
                           <td>
                             <span className={`chip ${isBlocked ? 'red' : 'green'}`} style={{ fontSize: '11px', padding: '2px 8px' }}>
@@ -2309,10 +2347,10 @@ export default function App() {
             </div>
 
             <div className="console-content">
-              {statuses[selectedLogInstance]?.logs?.length === 0 ? (
+              {consoleLogs.length === 0 ? (
                 <div className="console-row" style={{ color: 'var(--stone)' }}>No logs recorded for this instance yet.</div>
               ) : (
-                (statuses[selectedLogInstance]?.logs || []).map((log, idx) => (
+                consoleLogs.map((log, idx) => (
                   <div key={idx} className="console-row">
                     <span className="console-time">[{log.time}]</span>
                     <span className={getLogClass(log.message)}>{log.message}</span>

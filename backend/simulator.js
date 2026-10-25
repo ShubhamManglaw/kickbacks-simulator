@@ -1397,7 +1397,7 @@ async function start() {
     };
 
     pollEarnings();
-    const earningsInterval = setInterval(pollEarnings, 15000);
+    const earningsInterval = setInterval(pollEarnings, 60000); // 60s poll cuts 75% Kickbacks API bandwidth
 
     let startIdx = 0;
     let endIdx = scaleFactor;
