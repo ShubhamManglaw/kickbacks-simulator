@@ -1409,7 +1409,12 @@ async function start() {
       if (instanceMatch) {
         const instNum = parseInt(instanceMatch[1], 10);
 
-        if (clientsPerInstance > 0) {
+        const botsPerAccount = parseInt(process.env.BOTS_PER_ACCOUNT_PER_INSTANCE || "0", 10);
+
+        if (botsPerAccount > 0) {
+          startIdx = (instNum - 1) * botsPerAccount;
+          endIdx = startIdx + botsPerAccount;
+        } else if (clientsPerInstance > 0) {
           const numProfiles = targetProfiles.length;
           const perProfileClients = Math.max(1, Math.floor(clientsPerInstance / numProfiles));
           const profileIndexInActive = targetProfiles.findIndex(item => item.p.name === p.name);
