@@ -250,6 +250,7 @@ const LOW_POWER_BOTS_PER_ACCOUNT = 2;
 let isLowPowerMode = false;
 let lowPowerTriggeredAt = 0;
 let autoRetriggerTimer = null;
+let isDailyCapped = false;
 
 function getMsUntilNext6AM() {
   const now = new Date();
@@ -354,7 +355,7 @@ async function checkDailyPayoutCap() {
 
 function startSimulator() {
   isDailyCapped = false;
-  if (autoResumeTimer) { clearTimeout(autoResumeTimer); autoResumeTimer = null; }
+  if (autoRetriggerTimer) { clearTimeout(autoRetriggerTimer); autoRetriggerTimer = null; }
   if (simulatorProcess) return false;
 
   clearLocalClientStats(process.env.INSTANCE_NAME || 'default');
@@ -702,12 +703,17 @@ app.get('/api/status', checkAuth, async (req, res) => {
 });
 
 app.post('/api/start', checkAuth, (req, res) => {
-  if (req.body?.forceFullScale || req.query?.force === 'true') {
-    isLowPowerMode = false;
-    appendLog("SYSTEM: User forced FULL SCALE fleet mode.");
+  try {
+    if (req.body?.forceFullScale || req.query?.force === 'true') {
+      isLowPowerMode = false;
+      appendLog("SYSTEM: User forced FULL SCALE fleet mode.");
+    }
+    const success = startSimulator();
+    res.json({ success, isLowPowerMode });
+  } catch (err) {
+    console.error("SYSTEM: Error in /api/start:", err.message);
+    res.status(500).json({ error: err.message });
   }
-  const success = startSimulator();
-  res.json({ success, isLowPowerMode });
 });
 
 app.post('/api/stop', checkAuth, (req, res) => {
