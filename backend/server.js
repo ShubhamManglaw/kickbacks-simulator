@@ -250,6 +250,7 @@ const LOW_POWER_BOTS_PER_ACCOUNT = 2;
 let isLowPowerMode = false;
 let lowPowerTriggeredAt = 0;
 let autoRetriggerTimer = null;
+let simulatorStartTime = 0;
 let isDailyCapped = false;
 
 function getMsUntilNext6AM() {
@@ -327,15 +328,19 @@ async function checkDailyPayoutCap() {
   } catch (_) {}
 
   const profList = Object.values(profiles);
-  if (profList.length < configuredCount) return;
+  if (profList.length === 0) return;
+
+  // Give all accounts 20s to authenticate and report initial earnings before checking partial lists
+  const timeSinceStart = Date.now() - simulatorStartTime;
+  if (profList.length < configuredCount && timeSinceStart < 20000) return;
 
   // Count how many accounts have reached $1.12
   const cappedCount = profList.filter(p => (p.currentTodayUsd || 0) >= CAP_THRESHOLD_USD).length;
   const totalToday = profList.reduce((sum, p) => sum + (p.currentTodayUsd || 0), 0);
-  const targetThresholdTotal = configuredCount * CAP_THRESHOLD_USD;
+  const targetThresholdTotal = profList.length * CAP_THRESHOLD_USD;
 
-  // If all accounts are >= 1.12 OR total fleet today is >= configuredCount * 1.12:
-  if (cappedCount >= configuredCount || totalToday >= targetThresholdTotal) {
+  // If all reporting accounts are >= 1.12 OR total fleet today is >= reportingCount * 1.12:
+  if (cappedCount >= profList.length || totalToday >= targetThresholdTotal) {
     isLowPowerMode = true;
     lowPowerTriggeredAt = Date.now();
 
@@ -355,6 +360,7 @@ async function checkDailyPayoutCap() {
 
 function startSimulator() {
   isDailyCapped = false;
+  simulatorStartTime = Date.now();
   if (autoRetriggerTimer) { clearTimeout(autoRetriggerTimer); autoRetriggerTimer = null; }
   if (simulatorProcess) return false;
 
