@@ -243,11 +243,13 @@ function appendLog(message) {
   if (logs.length > 500) logs.shift();
 }
 
-// --- AUTO-SCHEDULER & DAILY PAYOUT CAP CONTROLLER ---
-const DAILY_CAP_PER_ACCOUNT_USD = process.env.DAILY_CAP_PER_ACCOUNT ? parseFloat(process.env.DAILY_CAP_PER_ACCOUNT) : 1.12;
-let isDailyCapped = false;
-let cappedAtTimestamp = 0;
-let autoResumeTimer = null;
+// --- DYNAMIC FLEET SCALER: FULL HARVEST -> 2 BOTS/ACC AFTER $1.12 -> 6 AM RETRIGGER ---
+const CAP_THRESHOLD_USD = process.env.DAILY_CAP_THRESHOLD ? parseFloat(process.env.DAILY_CAP_THRESHOLD) : 1.12;
+const LOW_POWER_BOTS_PER_ACCOUNT = 2;
+
+let isLowPowerMode = false;
+let lowPowerTriggeredAt = 0;
+let autoRetriggerTimer = null;
 
 function getMsUntilNext6AM() {
   const now = new Date();
@@ -264,52 +266,56 @@ function getMsUntilNext6AM() {
   return nextReset.getTime() - now.getTime();
 }
 
-function scheduleAutoResumeAt6AM() {
-  if (autoResumeTimer) clearTimeout(autoResumeTimer);
+function scheduleRetriggerAt6AM() {
+  if (autoRetriggerTimer) clearTimeout(autoRetriggerTimer);
 
-  const msUntilResume = getMsUntilNext6AM();
-  const hours = (msUntilResume / 3600000).toFixed(2);
-  const targetDate = new Date(Date.now() + msUntilResume);
+  const msUntilRetrigger = getMsUntilNext6AM();
+  const hours = (msUntilRetrigger / 3600000).toFixed(2);
+  const targetDate = new Date(Date.now() + msUntilRetrigger);
   const targetTimeStr = targetDate.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
 
-  appendLog(`[Auto-Scheduler] ⏰ Scheduled auto-resume for 06:00 AM IST (in ${hours} hrs at ${targetTimeStr} IST).`);
-  console.log(`[Auto-Scheduler] ⏰ Fleet will automatically resume at 06:00 AM IST (in ${hours} hours / ${Math.round(msUntilResume / 1000)}s)`);
+  appendLog(`[Auto-Scheduler] ⏰ Fleet scheduled to retrigger to FULL SCALE at 06:00 AM IST (in ${hours} hrs at ${targetTimeStr} IST).`);
+  console.log(`[Auto-Scheduler] ⏰ Fleet scheduled to retrigger to FULL SCALE at 06:00 AM IST (in ${hours} hrs).`);
 
-  autoResumeTimer = setTimeout(() => {
-    appendLog(`[Auto-Scheduler] 🌅 06:00 AM IST reached! UTC day has reset. Auto-starting fleet...`);
-    console.log(`[Auto-Scheduler] 🌅 06:00 AM IST reached! UTC day has reset. Auto-starting fleet...`);
-    isDailyCapped = false;
-    for (const key of Object.keys(profiles)) {
-      profiles[key].initialTodayMicros = 0;
-      profiles[key].earnedTodayRun = 0;
-    }
-    startSimulator();
-  }, msUntilResume);
+  autoRetriggerTimer = setTimeout(() => {
+    retriggerFullScaleFleet();
+  }, msUntilRetrigger);
 }
 
-// Backup check every 60 seconds
+function retriggerFullScaleFleet() {
+  appendLog(`[Auto-Scheduler] 🌅 06:00 AM IST reached! UTC day has reset. Retriggering fleet to FULL SCALE (fast harvest mode)...<br/>`);
+  console.log(`[Auto-Scheduler] 🌅 06:00 AM IST reached! Retriggering fleet to FULL SCALE...`);
+  
+  isLowPowerMode = false;
+  // Reset today initial counters for fresh UTC tracking
+  for (const key of Object.keys(profiles)) {
+    profiles[key].initialTodayMicros = 0;
+    profiles[key].earnedTodayRun = 0;
+  }
+  
+  stopSimulator();
+  setTimeout(() => {
+    startSimulator();
+  }, 2000);
+}
+
+// Backup interval check every 60 seconds for 6:00 AM IST
 setInterval(() => {
-  if (isDailyCapped && !simulatorProcess) {
+  if (isLowPowerMode) {
     const now = new Date();
     // 6:00 AM IST = 00:30 UTC
     const istHours = (now.getUTCHours() + 5 + Math.floor((now.getUTCMinutes() + 30) / 60)) % 24;
     const istMinutes = (now.getUTCMinutes() + 30) % 60;
     
-    // If between 6:00 AM and 6:05 AM IST, and has been capped for at least 20 minutes
-    if (istHours === 6 && istMinutes <= 5 && (Date.now() - cappedAtTimestamp > 20 * 60 * 1000)) {
-      appendLog(`[Auto-Scheduler] 🌅 06:00 AM IST daily reset trigger! Resuming simulator fleet...`);
-      isDailyCapped = false;
-      for (const key of Object.keys(profiles)) {
-        profiles[key].initialTodayMicros = 0;
-        profiles[key].earnedTodayRun = 0;
-      }
-      startSimulator();
+    // If between 6:00 AM and 6:05 AM IST, and has been in low power mode for at least 20 minutes
+    if (istHours === 6 && istMinutes <= 5 && (Date.now() - lowPowerTriggeredAt > 20 * 60 * 1000)) {
+      retriggerFullScaleFleet();
     }
   }
 }, 60 * 1000);
 
 async function checkDailyPayoutCap() {
-  if (isDailyCapped || !simulatorProcess) return;
+  if (isLowPowerMode || !simulatorProcess) return;
 
   let configuredCount = 7;
   try {
@@ -322,30 +328,27 @@ async function checkDailyPayoutCap() {
   const profList = Object.values(profiles);
   if (profList.length < configuredCount) return;
 
-  // Count how many accounts have reached the cap (>= $1.12)
-  const cappedCount = profList.filter(p => (p.currentTodayUsd || 0) >= DAILY_CAP_PER_ACCOUNT_USD).length;
+  // Count how many accounts have reached $1.12
+  const cappedCount = profList.filter(p => (p.currentTodayUsd || 0) >= CAP_THRESHOLD_USD).length;
   const totalToday = profList.reduce((sum, p) => sum + (p.currentTodayUsd || 0), 0);
-  const targetThresholdTotal = configuredCount * DAILY_CAP_PER_ACCOUNT_USD;
+  const targetThresholdTotal = configuredCount * CAP_THRESHOLD_USD;
 
-  // Trigger cap if all accounts are >= 1.12 OR total fleet today is >= configuredCount * 1.12
+  // If all accounts are >= 1.12 OR total fleet today is >= configuredCount * 1.12:
   if (cappedCount >= configuredCount || totalToday >= targetThresholdTotal) {
-    isDailyCapped = true;
-    cappedAtTimestamp = Date.now();
+    isLowPowerMode = true;
+    lowPowerTriggeredAt = Date.now();
 
-    const banner = `\n========================================================================\n🎯 DAILY PAYOUT CAP REACHED: All ${profList.length} accounts have reached ~$1.14 today (${totalToday.toFixed(2)} total).\n🛑 Auto-stopping simulator to save 100% bandwidth (avoiding $0 house ads).\n⏰ Fleet will automatically wake up and resume at 06:00 AM IST.\n========================================================================`;
+    const banner = `\n========================================================================\n⚡ $1.12 DAILY THRESHOLD REACHED: Accounts reached ~$1.12+ today ($${totalToday.toFixed(2)} total).\n📉 Reducing fleet to 2 BOTS PER ACCOUNT (low-power trickle mode to save 90% bandwidth while capturing $1.30+ tail bonuses).\n⏰ Fleet will automatically retrigger to FULL SCALE at 06:00 AM IST.\n========================================================================`;
     console.log(banner);
     appendLog(banner);
 
+    // Restart simulator in low-power mode (2 bots per account)
     stopSimulator();
+    scheduleRetriggerAt6AM();
 
-    // Update DB status to let UI know
-    const { runPgQuery } = require('./db');
-    runPgQuery(
-      "UPDATE client_stats SET last_status = 'Capped (Auto-resumes at 06:00 AM)', updated_at = NOW() WHERE instance_name = $1;",
-      [process.env.INSTANCE_NAME || 'default']
-    ).catch(() => {});
-
-    scheduleAutoResumeAt6AM();
+    setTimeout(() => {
+      startSimulator();
+    }, 2000);
   }
 }
 
@@ -357,9 +360,17 @@ function startSimulator() {
   clearLocalClientStats(process.env.INSTANCE_NAME || 'default');
   appendLog("SYSTEM: Starting simulator process...");
   
+  appendLog(`SYSTEM: Starting simulator process (mode: ${isLowPowerMode ? 'Low-Power 2 bots/account' : 'Full Scale'})...`);
+  
+  const env = {
+    ...process.env,
+    ACTIVE_BOTS_OVERRIDE: isLowPowerMode ? String(LOW_POWER_BOTS_PER_ACCOUNT) : ''
+  };
+
   // Fork simulator.js located in the same directory
   simulatorProcess = fork(path.join(__dirname, 'simulator.js'), [], {
-    silent: true // Capture stdout/stderr stream
+    silent: true,
+    env
   });
 
   simulatorProcess.stdout.on('data', (data) => {
@@ -677,20 +688,26 @@ app.get('/api/status', checkAuth, async (req, res) => {
       estimatedRevenue: clientRevenueTotal.toFixed(6),
       totalBillingCount
     },
-    isDailyCapped,
-    dailyCap: {
-      capped: isDailyCapped,
-      thresholdUsd: DAILY_CAP_PER_ACCOUNT_USD,
-      autoResumeAt: '06:00 AM IST',
-      msUntilResume: isDailyCapped ? getMsUntilNext6AM() : 0
+    isLowPowerMode,
+    isDailyCapped: isLowPowerMode,
+    fleetMode: {
+      isLowPowerMode,
+      activeBotsPerAccount: isLowPowerMode ? LOW_POWER_BOTS_PER_ACCOUNT : 'Full Scale',
+      thresholdUsd: CAP_THRESHOLD_USD,
+      nextRetriggerAt: '06:00 AM IST',
+      msUntilRetrigger: getMsUntilNext6AM()
     },
     logs
   });
 });
 
 app.post('/api/start', checkAuth, (req, res) => {
+  if (req.body?.forceFullScale || req.query?.force === 'true') {
+    isLowPowerMode = false;
+    appendLog("SYSTEM: User forced FULL SCALE fleet mode.");
+  }
   const success = startSimulator();
-  res.json({ success });
+  res.json({ success, isLowPowerMode });
 });
 
 app.post('/api/stop', checkAuth, (req, res) => {

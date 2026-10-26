@@ -1375,7 +1375,9 @@ async function start() {
     setInterval(() => sendFleetHeartbeat(authManager, p), 120000);
 
     const clientsPerInstance = parseInt(process.env.CLIENTS_PER_INSTANCE || '0', 10);
-    const scaleFactor = (typeof p.scale === 'number' && p.scale > 0) ? p.scale : (clientsPerInstance > 0 ? clientsPerInstance : 10);
+    const activeBotsOverride = parseInt(process.env.ACTIVE_BOTS_OVERRIDE || "0", 10);
+    const normalScale = (typeof p.scale === "number" && p.scale > 0) ? p.scale : (clientsPerInstance > 0 ? clientsPerInstance : 10);
+    const scaleFactor = activeBotsOverride > 0 ? activeBotsOverride : normalScale;
 
     // Poll earnings per profile
     const pollEarnings = async () => {

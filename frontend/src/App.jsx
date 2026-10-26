@@ -956,7 +956,8 @@ export default function App() {
   }
 
   // Fleet Efficiency
-  const isDailyCapped = Object.values(statuses).some(s => s && (s.isDailyCapped || s.dailyCap?.capped));
+  const isDailyCapped = Object.values(statuses).some(s => s && (s.isDailyCapped || s.dailyCap?.capped || s.isLowPowerMode || s.fleetMode?.isLowPowerMode));
+  const isLowPowerMode = Object.values(statuses).some(s => s && (s.isLowPowerMode || s.fleetMode?.isLowPowerMode));
   const activeClients = allClientsList.filter(c => c.lastStatus !== 'Stopped' && c.lastStatus !== 'inactive').length;
   const totalTicks = allClientsList.reduce((sum, c) => sum + (c.ticks || 0), 0);
   const totalBills = allClientsList.reduce((sum, c) => sum + (c.billing_count || 0), 0);
@@ -1152,7 +1153,7 @@ export default function App() {
             {isDailyCapped && (
               <div className="badge-soft-pill" style={{ backgroundColor: 'rgba(124, 58, 237, 0.15)', color: '#a855f7', border: '1px solid rgba(168, 85, 247, 0.35)', fontWeight: 700 }} title="Daily payout cap reached (~$1.14/account). Idle to save 100% Render bandwidth. Auto-resumes at 06:00 AM IST.">
                 <span className="status-pulse-dot" style={{ backgroundColor: '#a855f7' }}></span>
-                <span>🎯 Cap Reached · Resumes at 06:00 AM IST</span>
+                {isLowPowerMode ? <span>⚡ Low-Power (2 bots/acc) · 6 AM Retrigger</span> : <span>🎯 Cap Reached · Resumes at 06:00 AM IST</span>}
               </div>
             )}
 
@@ -1282,10 +1283,10 @@ export default function App() {
                   </div>
                   <div>
                     <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--ink)' }}>
-                      Daily Payout Cap Reached (~$1.14 / account)
+                      {isLowPowerMode ? '$1.12 Reached — Scaled to 2 Bots / Account' : 'Daily Payout Cap Reached (~$1.14 / account)'}
                     </h4>
                     <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: 'var(--steel)' }}>
-                      Fleet paused to save 100% Render bandwidth on non-paying house ads. Scheduled to auto-resume at <strong>06:00 AM IST</strong>.
+                      Running low-power trickle mode (2 bots/acc, 14 total) to harvest $1.30+ bonuses without wasting bandwidth. Auto-retriggers to <strong>FULL SCALE at 06:00 AM IST</strong>.
                     </p>
                   </div>
                 </div>
